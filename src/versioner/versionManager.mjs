@@ -159,9 +159,9 @@ async function isAutoBumpCommit(repoRoot, commitHash, subject, autoCfg) {
     'nuxt.config.ts',
   ];
 
-  const ok = paths.length > 0 && paths.every(p => {
+  const ok = paths.length > 0 && paths.every((p) => {
     const pp = p.replace(/\\/g, '/');
-    return versionFiles.some(v => pp === v || pp.endsWith('/' + v));
+    return versionFiles.some((v) => pp === v || pp.endsWith('/' + v));
   });
 
   return ok;
@@ -234,7 +234,7 @@ export class VersionManager {
           filtered.push(c);
         }
         info.commits = filtered;
-        const decision = this.classifier.decideBump(filtered.map(x => ({ subject: x.subject, body: x.body })));
+        const decision = this.classifier.decideBump(filtered.map((x) => ({ subject: x.subject, body: x.body })));
         info.bump = decision.kind;
         info.reasons = decision.reasons;
         globalUnitBumps.set(u.id, info.bump);
@@ -262,7 +262,6 @@ export class VersionManager {
 
     for (const plan of repoPlans) {
       const { repoCfg, repoRoot, baselineRef, applyPerBranchMode, requireClean, unitMap } = plan;
-      const touchedRepos = new Set();
       const unitResults = [];
       let newestRelevantHash = null;
 
@@ -278,11 +277,7 @@ export class VersionManager {
         info.to = nextV;
         if (!newestRelevantHash && info.commits.length) newestRelevantHash = info.commits[0].hash;
 
-        const vars = {
-          repo: repoCfg.id || '', unit: u.id, name: u.name || u.id,
-          version: nextV, prevVersion: currentV, bump: info.bump, stamp,
-        };
-
+        const vars = { repo: repoCfg.id || '', unit: u.id, name: u.name || u.id, version: nextV, prevVersion: currentV, bump: info.bump, stamp };
         const changes = [];
         if (!applyPerBranchMode) {
           for (const step of (u.write || [])) {
@@ -292,30 +287,24 @@ export class VersionManager {
             else throw new Error(`Step sconosciuto: ${step.type} (unit ${u.id})`);
           }
         }
-        const changed = changes.some(x => x.changed);
-        if (changed) touchedRepos.add(repoRoot);
 
         unitResults.push({
           unitId: u.id,
           from: currentV,
           to: nextV,
           bump: info.bump,
-          changedFiles: changes.filter(x => x.changed).map(x => x.file),
+          changedFiles: changes.filter((x) => x.changed).map((x) => x.file),
           plannedWrites: (u.write || []),
         });
       }
 
-      if (newestRelevantHash && (this.config.baseline?.strategy === 'file')) {
+      if (newestRelevantHash && (this.config.baseline?.strategy === 'file') && !applyPerBranchMode) {
         const fileName = this.config.baseline?.file || '.release-base';
-        if (!applyPerBranchMode) {
-          await writeReleaseBase(repoRoot, fileName, newestRelevantHash, dryRun);
-          touchedRepos.add(repoRoot);
-        }
+        await writeReleaseBase(repoRoot, fileName, newestRelevantHash, dryRun);
       }
 
       const doCommit = (commit === null) ? Boolean(repoCfg.git?.commit ?? true) : Boolean(commit);
       const doPush = (push === null) ? Boolean(repoCfg.git?.push ?? false) : Boolean(push);
-
       const pendingSubmoduleUpdates = pendingSubmoduleUpdatesByParent.get(repoCfg.id) || {};
 
       const didGit = await this.#gitActions({
@@ -367,14 +356,14 @@ export class VersionManager {
 
     if (allowDirty) throw new Error('commit/push non consentiti con --allow-dirty');
     if (requireClean) {
-      // il check iniziale è già stato eseguito in run()
+      // check iniziale già eseguito in run()
     }
 
     const gitCfg = repoCfg.git || {};
     const branches = gitCfg.branches || [];
     const commitPerBranch = Boolean(gitCfg.commitPerBranch);
 
-    const versionForMessage = (gitCfg.messageFromUnit && unitResults.find(u => u.unitId === gitCfg.messageFromUnit)?.to)
+    const versionForMessage = (gitCfg.messageFromUnit && unitResults.find((u) => u.unitId === gitCfg.messageFromUnit)?.to)
       || unitResults[0]?.to
       || '0.0.0';
 
@@ -393,7 +382,6 @@ export class VersionManager {
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
-
       const newHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
       if (doPush) {
@@ -445,7 +433,7 @@ export class VersionManager {
       try {
         const targets = [...branches];
         const includeCur = (gitCfg.includeCurrentBranch !== false);
-        if (includeCur && !targets.some(x => x?.name === originalBranch)) {
+        if (includeCur && !targets.some((x) => x?.name === originalBranch)) {
           targets.unshift({
             name: originalBranch,
             remote: gitCfg.currentBranchRemote || null,
@@ -453,7 +441,7 @@ export class VersionManager {
           });
         }
 
-        if (gitCfg.versionsBranch && !targets.some(x => x?.name === gitCfg.versionsBranch)) {
+        if (gitCfg.versionsBranch && !targets.some((x) => x?.name === gitCfg.versionsBranch)) {
           targets.push({
             name: gitCfg.versionsBranch,
             remote: gitCfg.versionsBranchRemote || null,
@@ -521,13 +509,7 @@ export class VersionManager {
         await checkout(repoRoot, originalBranch);
       }
 
-      return {
-        committed: true,
-        pushed: Boolean(doPush),
-        mode: 'commit-per-branch-apply',
-        branches: (gitCfg.includeCurrentBranch === false ? branches : ([{ name: originalBranch }, ...branches])).map(b => b.name),
-        branchHeads,
-      };
+      return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-apply', branches: Object.keys(branchHeads), branchHeads };
     }
 
     const originalBranch = await getCurrentBranch(repoRoot);
@@ -565,16 +547,11 @@ export class VersionManager {
           await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`);
         }
       }
-
-      if (doPush && gitCfg.versionsBranch) {
-        const remote = await getDefaultRemote(repoRoot);
-        await pushHeadToBranch(repoRoot, gitCfg.versionsBranch, remote, true);
-      }
     } finally {
       await checkout(repoRoot, originalBranch);
       await branchDelete(repoRoot, tmpBranch);
     }
 
-    return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch' };
+    return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-cherry-pick' };
   }
 }

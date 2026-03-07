@@ -57,10 +57,6 @@ export async function addAll(cwd) {
   await git(['add', '-A'], { cwd });
 }
 
-export async function addPath(cwd, filePath) {
-  await git(['add', '--', filePath], { cwd });
-}
-
 export async function commit(cwd, message) {
   await git(['commit', '-m', message], { cwd });
 }
@@ -71,6 +67,10 @@ export async function checkout(cwd, branch) {
 
 export async function checkoutRef(cwd, ref) {
   await git(['checkout', ref], { cwd });
+}
+
+export async function addPath(cwd, filePath) {
+  await git(['add', filePath], { cwd });
 }
 
 export async function checkoutNew(cwd, branch) {
