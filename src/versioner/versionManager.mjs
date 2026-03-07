@@ -26,6 +26,8 @@ import {
   push,
   pushHeadToBranch,
   getDefaultRemote,
+  addPath,
+  submoduleUpdate,
 } from './git/git.mjs';
 
 function nowSafeStamp() {
@@ -46,6 +48,38 @@ function remapInheritedBump(depBump, unit) {
   if (depBump === 'major') return normalizeInheritedBump(unit.bumpFromMajor ?? 'major', 'major');
   if (depBump === 'minor') return normalizeInheritedBump(unit.bumpFromMinor ?? 'minor', 'minor');
   return depBump;
+}
+
+
+
+function sortReposForExecution(repos = []) {
+  // Modalità semplice e prevedibile:
+  // - i repo che propagano il proprio SHA come submodule nel parent vengono eseguiti prima
+  // - gli altri dopo, mantenendo l'ordine relativo dichiarato in config
+  const withIndex = [...repos].map((repo, index) => ({ repo, index }));
+  withIndex.sort((a, b) => {
+    const aWeight = a.repo?.git?.linkedSubmoduleInParent?.mode === 'propagate' ? 0 : 1;
+    const bWeight = b.repo?.git?.linkedSubmoduleInParent?.mode === 'propagate' ? 0 : 1;
+    if (aWeight !== bWeight) return aWeight - bWeight;
+    return a.index - b.index;
+  });
+  return withIndex.map((x) => x.repo);
+}
+
+function filterStatusByAllowedPrefixes(status, allowedPrefixes = []) {
+  if (!status) return '';
+  const normalized = (allowedPrefixes || []).map((x) => String(x).replace(/\\/g, '/')).filter(Boolean);
+  if (!normalized.length) return status;
+  return status
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .filter((line) => {
+      const pathPart = line.length > 3 ? line.slice(3).trim() : line.trim();
+      const pathNorm = pathPart.replace(/\\/g, '/');
+      return !normalized.some((prefix) => pathNorm === prefix || pathNorm.startsWith(prefix + '/'));
+    })
+    .join('\n');
 }
 
 async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allowCreate = true) {
@@ -165,8 +199,10 @@ export class VersionManager {
 
     const stamp = formatNowIt();
     const results = [];
+    const reposOrdered = sortReposForExecution(repos);
+    const pendingSubmoduleUpdates = new Map();
 
-    for (const repoCfg of repos) {
+    for (const repoCfg of reposOrdered) {
         const applyPerBranchMode = Boolean(repoCfg.git?.commitPerBranch) && (repoCfg.git?.commitPerBranchMode === 'apply');
       const repoRoot = path.resolve(repoCfg.root || '.');
 
@@ -298,7 +334,20 @@ export class VersionManager {
           applyPerBranchMode,
           releaseBaseHash: newestRelevantHash,
           releaseBaseFile: (this.config.baseline?.strategy === 'file') ? (this.config.baseline?.file || '.release-base') : null,
+          linkedSubmoduleUpdates: pendingSubmoduleUpdates.get(repoCfg.id || '') || [],
         });
+
+      const linkCfg = repoCfg.git?.linkedSubmoduleInParent;
+      if (linkCfg?.mode === 'propagate' && didGit?.branchHeads && linkCfg.parentRepoId && linkCfg.submodulePath) {
+        const list = pendingSubmoduleUpdates.get(linkCfg.parentRepoId) || [];
+        list.push({
+          sourceRepoId: repoCfg.id || repoRoot,
+          sourceRepoRoot: repoRoot,
+          submodulePath: linkCfg.submodulePath,
+          branchHeads: didGit.branchHeads,
+        });
+        pendingSubmoduleUpdates.set(linkCfg.parentRepoId, list);
+      }
 
       results.push({ repo: repoCfg.id || repoRoot, repoRoot, baselineRef, unitResults, git: didGit });
     }
@@ -306,18 +355,18 @@ export class VersionManager {
     return { stamp, results };
   }
 
-  async #gitActions({ repoRoot, repoCfg, unitResults, stamp, doCommit, doPush, allowDirty, dryRun, requireClean, applyPerBranchMode, releaseBaseHash, releaseBaseFile }) {
+  async #gitActions({ repoRoot, repoCfg, unitResults, stamp, doCommit, doPush, allowDirty, dryRun, requireClean, applyPerBranchMode, releaseBaseHash, releaseBaseFile, linkedSubmoduleUpdates = [] }) {
     if (!doCommit && !doPush) return { committed: false, pushed: false, mode: 'none' };
     if (dryRun) return { committed: false, pushed: false, mode: 'dry-run' };
 
-    const status = await getStatusPorcelain(repoRoot);
+    const status = filterStatusByAllowedPrefixes(await getStatusPorcelain(repoRoot), linkedSubmoduleUpdates.map((x) => x.submodulePath));
 
     // In modalità apply-per-branch le modifiche vengono applicate dopo i checkout, quindi qui il repo può essere pulito: non devo interrompere
     if (!status && !applyPerBranchMode) {
       return { committed: false, pushed: false, mode: 'no-changes' };
     }
 
-    if (!unitResults?.length) {
+    if (!unitResults?.length && !linkedSubmoduleUpdates.length) {
       return { committed: false, pushed: false, mode: 'no-changes' };
     }
 
@@ -358,7 +407,7 @@ export class VersionManager {
         }
       }
 
-      return { committed: true, pushed: Boolean(doPush), mode: 'single-branch', branch: curBranch };
+      return { committed: true, pushed: Boolean(doPush), mode: 'single-branch', branch: curBranch, branchHeads: { [curBranch]: (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim() } };
     }
 
     if (!commitPerBranch) {
@@ -385,7 +434,7 @@ export class VersionManager {
         }
       }
 
-      return { committed: true, pushed: Boolean(doPush), mode: 'single-commit-multi-push' };
+      return { committed: true, pushed: Boolean(doPush), mode: 'single-commit-multi-push', branchHeads: { [curBranch]: (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim() } };
     }
 
     
@@ -399,9 +448,11 @@ export class VersionManager {
           || '0.0.0';
 
         const varsBase = { repo: repoCfg.id || '', version: versionForMessage, stamp };
+        const branchHeads = {};
 
+        let targets = [];
         try {
-          const targets = [...branches];
+          targets = [...branches];
 
           // include anche il branch corrente (se non è già nella lista)
           const includeCur = (gitCfg.includeCurrentBranch !== false);
@@ -424,6 +475,16 @@ export class VersionManager {
               isVersionsBranch: true,
             });
           }
+
+          const syncLinkedSubmodulesForBranch = async (branchName) => {
+            for (const update of linkedSubmoduleUpdates) {
+              const sha = update?.branchHeads?.[branchName];
+              if (!sha || !update?.submodulePath) continue;
+              const subRoot = path.join(repoRoot, update.submodulePath);
+              await git(['checkout', sha], { cwd: subRoot });
+              await addPath(repoRoot, update.submodulePath);
+            }
+          };
 
           for (const b of targets) {
             await checkout(repoRoot, b.name);
@@ -460,11 +521,15 @@ export class VersionManager {
               if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
             }
 
+            await syncLinkedSubmodulesForBranch(b.name);
+
             const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
             const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
 
             await addAll(repoRoot);
             await gitCommit(repoRoot, msg);
+
+            branchHeads[b.name] = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
             if (doPush) {
               const remote = b.remote || (await getDefaultRemote(repoRoot));
@@ -474,9 +539,12 @@ export class VersionManager {
           }
         } finally {
           await checkout(repoRoot, originalBranch);
+          for (const update of linkedSubmoduleUpdates) {
+            if (update?.submodulePath) await submoduleUpdate(repoRoot, update.submodulePath);
+          }
         }
 
-        return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-apply', branches: (gitCfg.includeCurrentBranch === false ? branches : ([{name: originalBranch}, ...branches])).map(b => b.name) };
+        return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-apply', branches: targets.map(b => b.name), branchHeads };
       }
 
 // Commit per branch con messaggi diversi: strategia cherry-pick + amend
@@ -496,6 +564,7 @@ export class VersionManager {
     const baseSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
     // applico su ogni branch target
+    const branchHeads = {};
     try {
       for (const b of branches) {
         // checkout (se non esiste, errore esplicito: meglio non creare branch a sorpresa)
@@ -512,6 +581,7 @@ export class VersionManager {
         const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
         await amendMessage(repoRoot, msg);
 
+        branchHeads[b.name] = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
         if (doPush) {
           const remote = b.remote || (await getDefaultRemote(repoRoot));
           if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
@@ -530,6 +600,6 @@ export class VersionManager {
       await branchDelete(repoRoot, tmpBranch);
     }
 
-    return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch', branches: (gitCfg.includeCurrentBranch === false ? branches : ([{name: originalBranch}, ...branches])).map(b => b.name) };
+    return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch', branches: (gitCfg.includeCurrentBranch === false ? branches : ([{name: originalBranch}, ...branches])).map(b => b.name), branchHeads };
   }
 }

@@ -114,6 +114,17 @@ export async function pushHeadToBranch(cwd, branchName, remote = null, forceWith
   await git(args, { cwd });
 }
 
+
+export async function addPath(cwd, filePath) {
+  await git(['add', '--', filePath], { cwd });
+}
+
+export async function submoduleUpdate(cwd, filePath = null) {
+  const args = ['submodule', 'update', '--init'];
+  if (filePath) args.push('--', filePath);
+  await git(args, { cwd, allowFail: true });
+}
+
 export async function logCommits(cwd, { range, paths = [], noMerges = false } = {}) {
   // Record separator \x1e, field separator \x1f
   const fmt = '%H%x1f%s%x1f%b%x1e';

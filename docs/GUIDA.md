@@ -864,3 +864,26 @@ Prima di usare il tool verifica:
 * `version.file` e `write.file` esistenti o con `createIfMissing`
 
 ---
+
+
+## Repo esterni montati come submodule nel parent
+
+Per un repo esterno (es. `ui-kit`) puoi scegliere tra due modalità:
+
+- `linkedSubmoduleInParent.mode: 'legacy'`
+  - il repo esterno viene versionato e pushato con la sua logica
+  - il repo parent **non** riceve aggiornamento automatico del puntatore submodule
+
+- `linkedSubmoduleInParent.mode: 'propagate'`
+  - il repo esterno usa la sua branch propagation normale
+  - dopo ogni branch release, il versioner aggiorna anche il gitlink nel repo parent sui branch corrispondenti
+
+Esempio:
+
+```js
+linkedSubmoduleInParent: {
+  mode: 'propagate',
+  parentRepoId: 'bibrid',
+  submodulePath: 'layers/ui-kit'
+}
+```

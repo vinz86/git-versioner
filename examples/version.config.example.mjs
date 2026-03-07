@@ -230,6 +230,53 @@ export default {
       }
     },
 
+    // ESEMPIO: repo esterno montato come submodule nel parent
+    // Se linkedSubmoduleInParent.mode = 'propagate', dopo il release del repo esterno
+    // il versioner aggiorna automaticamente il gitlink nel repo parent sui branch corrispondenti.
+    {
+      id: 'ui-kit',
+      root: 'layers/ui-kit',
+      units: [
+        {
+          id: 'layer-ui-kit',
+          name: 'ui-kit',
+          type: 'layer',
+          pathFilter: [],
+          version: { file: 'version.json', field: 'version', createIfMissing: true, default: '0.0.0' },
+          write: [
+            { type: 'json-set', file: 'version.json', set: { version: '{{version}}' } },
+            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } }
+          ]
+        }
+      ],
+      git: {
+        requireClean: true,
+        commit: true,
+        push: true,
+        commitPerBranch: true,
+        commitPerBranchMode: 'apply',
+        includeCurrentBranch: true,
+        mergeCurrentBranchIntoTargets: true,
+        mergeCurrentBranchIntoVersionsBranch: false,
+        messageFromUnit: 'layer-ui-kit',
+        currentBranchMessage: 'Versione {{version}} del {{stamp}} - {{branch}}',
+        branches: [
+          { name: 'main', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - main' },
+          { name: 'current_version', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - current_version' }
+        ],
+        versionsBranch: 'versions',
+        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions',
+
+        // mode: 'legacy' => nessun update automatico nel parent
+        // mode: 'propagate' => aggiorna anche il puntatore del submodule nel parent
+        linkedSubmoduleInParent: {
+          mode: 'propagate',
+          parentRepoId: 'monorepo',
+          submodulePath: 'layers/ui-kit'
+        }
+      }
+    },
+
     // ESEMPIO REPO SEPARATO
     {
       id: 'layer-external',
