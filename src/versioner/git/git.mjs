@@ -57,12 +57,20 @@ export async function addAll(cwd) {
   await git(['add', '-A'], { cwd });
 }
 
+export async function addPath(cwd, filePath) {
+  await git(['add', '--', filePath], { cwd });
+}
+
 export async function commit(cwd, message) {
   await git(['commit', '-m', message], { cwd });
 }
 
 export async function checkout(cwd, branch) {
   await git(['checkout', branch], { cwd });
+}
+
+export async function checkoutRef(cwd, ref) {
+  await git(['checkout', ref], { cwd });
 }
 
 export async function checkoutNew(cwd, branch) {
@@ -112,17 +120,6 @@ export async function pushHeadToBranch(cwd, branchName, remote = null, forceWith
   if (branchName === 'versions') args.splice(1, 0, '--force-with-lease');
 
   await git(args, { cwd });
-}
-
-
-export async function addPath(cwd, filePath) {
-  await git(['add', '--', filePath], { cwd });
-}
-
-export async function submoduleUpdate(cwd, filePath = null) {
-  const args = ['submodule', 'update', '--init'];
-  if (filePath) args.push('--', filePath);
-  await git(args, { cwd, allowFail: true });
 }
 
 export async function logCommits(cwd, { range, paths = [], noMerges = false } = {}) {
