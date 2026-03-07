@@ -1,0 +1,13 @@
+{
+  "name": "git-versioner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Git-based versioning CLI for monorepo and multi-repo projects",
+  "bin": {
+    "git-versioner": "./bin/versioner.mjs"
+  },
+  "scripts": {
+    "test": "node -e \"console.log('TODO: tests')\""
+  }
+}
