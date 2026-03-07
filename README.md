@@ -1,6 +1,6 @@
 # git-versioner
 
-CLI di versioning per progetti:
+CLI di versioning per progetti git:
 
 - monorepo
 - multi-repo
