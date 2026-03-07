@@ -24,5 +24,5 @@ linkedSubmoduleInParent: {
 }
 ```
 
-- `legacy`: comportamento attuale, nessun update automatico del parent
+- `legacy`: nessun update automatico del parent
 - `propagate`: dopo il release del repo esterno, il versioner aggiorna anche il puntatore del submodule nel repo parent sui branch corrispondenti
