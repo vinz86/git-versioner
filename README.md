@@ -9,4 +9,4 @@ CLI di versioning per progetti:
 ## Uso
 
 ```bash
-node bin/versioner.mjs --config ./version.config.mjs --commit --push
+node bin/git-versioner.mjs --config ./version.config.mjs --commit --push
