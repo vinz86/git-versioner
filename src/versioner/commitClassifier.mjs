@@ -69,7 +69,7 @@ export class CommitClassifier {
   }
 
   /**
-   * Calcola il bump massimo su una lista di commit.
+   * Calcola il bump massimo su una lista di commit
    * @param {Array<{subject:string, body:string}>} commits
    * @returns {{kind: ('major'|'minor'|'patch'|null), reasons: Array<any>}}
    */

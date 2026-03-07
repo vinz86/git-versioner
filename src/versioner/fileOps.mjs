@@ -53,11 +53,11 @@ export function setByDotPath(obj, dotPath, value) {
 }
 
 /**
- * Aggiorna un file JSON (tipicamente package.json).
- * @param {string} repoRoot
- * @param {{file:string, set:Record<string,string>, onlyIfChanged?:boolean}} step
- * @param {object} vars
- * @param {boolean} dryRun
+ * GIra ricorsivamente un oggetto (o array) e renderizza tutte le stringhe trovate
+ * Per iniettare variabili in strutture dati complesse prima della scrittura su disco
+ * * @param {any} obj - L'oggetto, array o valore primitivo da processare
+ * @param {object} vars - Dizionario di variabili per il motore di template
+ * @returns {any} Una copia dell'oggetto con i template risolti
  */
 export function renderObjectTemplates(obj, vars) {
   if (obj == null) return obj;
@@ -72,10 +72,16 @@ export function renderObjectTemplates(obj, vars) {
 }
 
 /**
- * Aggiorna un file JSON (tipicamente package.json o version.json).
- * Supporta:
- * - createIfMissing: true -> crea il file se non esiste usando "initial"
- * - initial: oggetto JSON iniziale (può contenere {{template}})
+ * Aggiorna un file JSON su disco applicando modifiche specifiche tramite dot-notation
+ * * @param {string} repoRoot - Percorso base del repository
+ * @param {object} step - Configurazione dell'operazione
+ * @param {string} step.file - Percorso relativo del file JSON
+ * @param {object} [step.set] - Coppie path.dato: valore_template da aggiornare
+ * @param {boolean} [step.createIfMissing] - Se true, crea il file se non esiste
+ * @param {object} [step.initial] - Contenuto iniziale se il file deve essere creato
+ * @param {object} vars - Variabili per il rendering dei template
+ * @param {boolean} dryRun - Se true, simula l'operazione senza scrivere su disco
+ * @returns {Promise<{changed: boolean, file: string, skipped?: boolean}>} Stato dell'operazione
  */
 export async function applyJsonSet(repoRoot, step, vars, dryRun) {
   const abs = path.join(repoRoot, step.file);
@@ -106,8 +112,7 @@ export async function applyJsonSet(repoRoot, step, vars, dryRun) {
 }
 
 /**
- * Aggiorna un README (o qualsiasi testo) tra marker START/END.
- * Robustezza: marker con/ senza spazi.
+ * Aggiorna un README (o qualsiasi testo) tra marker START/END
  */
 export async function applyReadmeMarker(repoRoot, step, vars, dryRun) {
   const abs = path.join(repoRoot, step.file);
@@ -131,7 +136,7 @@ export async function applyReadmeMarker(repoRoot, step, vars, dryRun) {
 }
 
 /**
- * Sostituzioni testuali via regex (utile per nuxt.config.ts o altri file non JSON).
+ * Sostituzioni testuali con regex (utile per nuxt.config.ts o altri file non JSON)
  * Ogni replace: { pattern: string, flags?: string, with: string }
  */
 export async function applyTextReplace(repoRoot, step, vars, dryRun) {

@@ -7,6 +7,7 @@ CLI di versioning per progetti:
 - app + layers
 
 ## Uso
+- [GUIDA](./docs/GUIDA.md)
 
 ```bash
 node bin/git-versioner.mjs --config ./version.config.mjs --commit --push

@@ -28,45 +28,6 @@ import {
   getDefaultRemote,
 } from './git/git.mjs';
 
-/**
- * Config:
- * {
- *   repos: [
- *     {
- *       id: "app",
- *       root: ".",               // path locale repo
- *       units: [
- *         {
- *           id: "app",
- *           name: "bibrid",
- *           type: "app"|"layer",
- *           pathFilter: [],      // se unit sta dentro un monorepo, filtra commit a questi path
- *           version: { file:"package.json", field:"version" }, // sorgente versione
- *           autoBump: { enabled:true, versionFiles:[...] , subjectRe:"..." } // opzionale
- *           write: [ step... ]   // step di scrittura (json-set, readme-marker, text-replace)
- *           bumpFrom: ["layerA","layerB"] // opzionale: versione app eredita bump massimo da altri unit
- *         }
- *       ],
- *       git: {
- *         requireClean: true,
- *         commitPerBranch: true,
- *         branches: [
- *           { name:"development/current_version", remote:"origin", message:"Versione {{version}} del {{stamp}} - {{branch}}" },
- *           { name:"main", remote:"origin", message:"Versione {{version}} del {{stamp}} - {{branch}}" }
- *         ],
- *         versionsBranch: "versions" // opzionale: push anche su questo branch (stesso commit)
- *       }
- *     }
- *   ],
- *   rules: { ...commit classifier... },
- *   baseline: { strategy:"tag"|"file"|"none", file:".release-base", tagMatch:"*[0-9]*.[0-9]*.[0-9]*" },
- * }
- */
-
-function unique(arr) {
-  return [...new Set(arr)];
-}
-
 function nowSafeStamp() {
   const d = new Date();
   // YYYYMMDD-HHMMSS per nomi branch temporanei
@@ -94,14 +55,13 @@ async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allow
   const field = unit.version.field;
   const defV = String(unit.version.default ?? '0.0.0');
 
-  // In modalità "apply per branch" voglio evitare qualunque modifica prima dei checkout.
-  // Quindi: se manca il file e ho un default, uso il default senza creare il file.
+  // In modalità "apply per branch" voglio evitare qualunque modifica prima dei checkout
+  // Quindi: se manca il file e ho un default, uso il default senza creare il file
   if (!exists && !allowCreate) {
     if (!parseSemver(defV)) throw new Error(`Default versione non valido: ${defV} (unit ${unit.id})`);
     return defV;
   }
 
-  // Se manca, possiamo crearlo:
   // - unit.version.createIfMissing === true
   // - oppure se è presente unit.version.default
   if (!exists) {
@@ -183,7 +143,8 @@ async function isAutoBumpCommit(repoRoot, commitHash, subject, autoCfg) {
     'nuxt.config.ts',
   ];
 
-  // se tutti i path sono "versionFiles" (o sotto) allora consideralo auto-bump
+  // se tutti i path sono versionFiles (o sotto) allora lo considero auto-bump:
+  // Controlla se tutti i file modificati appartengono alla lista dei file che gestiscono la versione (come package.json, VERSION.txt, ecc.).
   const ok = paths.length > 0 && paths.every(p => {
     const pp = p.replace(/\\/g, '/');
     return versionFiles.some(v => pp === v || pp.endsWith('/' + v));
@@ -243,7 +204,7 @@ export class VersionManager {
       }
 
       // bump aggregati (es: app eredita bump dai layer)
-      // Puoi rimappare major/minor ereditati con due parametri per unit:
+      // Si può rimappare major/minor ereditati con due parametri per unit:
       // - bumpFromMajor: 'major' | 'minor' | 'patch'
       // - bumpFromMinor: 'minor' | 'patch'
       for (const [_id, info] of unitMap.entries()) {
@@ -266,7 +227,7 @@ export class VersionManager {
 
       for (const [_id, info] of unitMap.entries()) {
         const u = info.unit;
-        if (!info.bump) continue; // nulla da fare
+        if (!info.bump) continue;
 
         const varsForInit = { repo: repoCfg.id || '', unit: u.id, name: u.name || u.id, stamp };
           const currentV = await readUnitCurrentVersion(repoRoot, u, varsForInit, dryRun, !applyPerBranchMode);
@@ -275,7 +236,7 @@ export class VersionManager {
         info.from = currentV;
         info.to = nextV;
 
-        // newestRelevantHash: primo commit "rilevante" nel range (il più recente in git log)
+        // newestRelevantHash: primo commit rilevante nel range (il più recente in git log)
         if (!newestRelevantHash && info.commits.length) newestRelevantHash = info.commits[0].hash;
 
         const vars = {
@@ -311,7 +272,7 @@ export class VersionManager {
         });
       }
 
-      // 4) release-base (opzionale)
+      // release-base
       if (newestRelevantHash && (this.config.baseline?.strategy === 'file')) {
         const fileName = this.config.baseline?.file || '.release-base';
         if (!applyPerBranchMode) {
@@ -320,7 +281,7 @@ export class VersionManager {
         }
       }
 
-      // 5) commit + push (repo-level)
+      // commit + push
       const doCommit = (commit === null) ? Boolean(repoCfg.git?.commit ?? true) : Boolean(commit);
       const doPush = (push === null) ? Boolean(repoCfg.git?.push ?? false) : Boolean(push);
 
@@ -351,8 +312,7 @@ export class VersionManager {
 
     const status = await getStatusPorcelain(repoRoot);
 
-    // In modalità apply-per-branch le modifiche vengono applicate DOPO i checkout,
-    // quindi qui il repo può essere pulito: non dobbiamo interrompere.
+    // In modalità apply-per-branch le modifiche vengono applicate dopo i checkout, quindi qui il repo può essere pulito: non devo interrompere
     if (!status && !applyPerBranchMode) {
       return { committed: false, pushed: false, mode: 'no-changes' };
     }
@@ -363,8 +323,8 @@ export class VersionManager {
 
     if (allowDirty) throw new Error('commit/push non consentiti con --allow-dirty');
     if (requireClean) {
-      // qui il repo è sporco perché abbiamo modificato file; però deve essere partito pulito
-      // lo controlliamo via config + disciplina in CI/uso manuale: se serve, qui puoi aggiungere un "snapshot" iniziale.
+      // qui il repo è sporco perché ho modificato file; però deve essere partito pulito
+      // lo controllo con config + disciplina in CI/uso manuale: se serve, qui si può aggiungere un snapshot iniziale
     }
 
     const gitCfg = repoCfg.git || {};
@@ -382,7 +342,7 @@ export class VersionManager {
       stamp,
     };
 
-    // Se non è definito alcun branch, commit/push sul branch corrente
+    // Se non è definito nessun branch commit/push sul branch corrente
     if (!branches.length) {
       const curBranch = await getCurrentBranch(repoRoot);
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
@@ -402,7 +362,7 @@ export class VersionManager {
     }
 
     if (!commitPerBranch) {
-      // Un solo commit e lo pushiamo su più branch (stesso commit/message).
+      // Un solo commit e lo pusho su più branch (stesso commit/message)
       const curBranch = await getCurrentBranch(repoRoot);
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
@@ -429,8 +389,8 @@ export class VersionManager {
     }
 
     
-      // Commit per branch: modalità "apply"=> checkout branch, applica le scritture, commit con messaggio specifico.
-      // Evita i conflitti tipici del cherry-pick quando i branch divergono.
+      // Commit per branch: modalità apply=> checkout branch, applica le scritture, commit con messaggio specifico
+      // Evita i conflitti tipici del cherry-pick quando i branch divergono
       if (applyPerBranchMode) {
         const originalBranch = await getCurrentBranch(repoRoot);
 
@@ -453,8 +413,8 @@ export class VersionManager {
             });
           }
 
-          // versions branch come target separato, con messaggio proprio e push force-with-lease.
-          // Per default NON mergia i commit del branch sorgente: deve restare un branch lineare di snapshot versioni.
+          // versions branch come target separato, con messaggio proprio e push force-with-lease
+          // Per default non mergia i commit del branch sorgente: deve restare un branch lineare di snapshot versioni
           if (gitCfg.versionsBranch && !targets.some(x => x?.name === gitCfg.versionsBranch)) {
             targets.push({
               name: gitCfg.versionsBranch,
@@ -519,11 +479,11 @@ export class VersionManager {
         return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-apply', branches: (gitCfg.includeCurrentBranch === false ? branches : ([{name: originalBranch}, ...branches])).map(b => b.name) };
       }
 
-// Commit per branch con messaggi diversi: strategia cherry-pick + amend.
+// Commit per branch con messaggi diversi: strategia cherry-pick + amend
     const originalBranch = await getCurrentBranch(repoRoot);
     const tmpBranch = `_versioner_tmp_${nowSafeStamp()}`;
 
-    // 1) creo commit base su tmp branch
+    // creo commit base su tmp branch
     await checkoutNew(repoRoot, tmpBranch);
 
     const first = branches[0];
@@ -535,7 +495,7 @@ export class VersionManager {
 
     const baseSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
-    // 2) applico su ogni branch target
+    // applico su ogni branch target
     try {
       for (const b of branches) {
         // checkout (se non esiste, errore esplicito: meglio non creare branch a sorpresa)

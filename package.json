@@ -1,7 +1,8 @@
 {
   "name": "git-versioner",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
+  "author": "Vinz",
   "type": "module",
   "description": "Git-based versioning CLI for monorepo and multi-repo projects",
   "bin": {

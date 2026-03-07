@@ -1,7 +1,4 @@
-/**
- * Template minimale: sostituisce {{chiave}} con valori stringa.
- * Non usa eval: solo lookup su oggetto.
- */
+//Template minimale: sostituisce {{chiave}} con valori stringa.
 export function renderTemplate(tpl, vars = {}) {
   const s = String(tpl ?? '');
   return s.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_, k) => {
