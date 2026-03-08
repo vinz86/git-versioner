@@ -10,4 +10,4 @@ CLI di versioning per progetti git:
 - [GUIDA](./docs/GUIDA.md)
 
 ```bash
-node bin/git-versioner.mjs --config ./version.config.mjs --commit --push 
+node bin/git-versioner.mjs --config ./version.config.mjs --commit --push
