@@ -202,6 +202,54 @@ async function applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, 
   if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
 }
 
+
+function resolveChangelogConfig(repoCfg) {
+  const cfg = repoCfg?.changelog || {};
+  const enabled = Boolean(cfg.enabled);
+  const hasGlobalNode = cfg.global && typeof cfg.global === 'object';
+  const hasVersionedNode = cfg.versioned && typeof cfg.versioned === 'object';
+
+  const globalEnabled = enabled && (hasGlobalNode ? Boolean(cfg.global.enabled) : true);
+  const globalOutput = (hasGlobalNode ? cfg.global.output : cfg.output) || 'CHANGELOG.md';
+
+  const versionedEnabled = enabled && (hasVersionedNode ? Boolean(cfg.versioned.enabled) : true);
+  const versionedOutput = (hasVersionedNode ? cfg.versioned.output : cfg.versionedOutput) || 'docs/changelogs/CHANGELOG_{{version}}.md';
+
+  return {
+    enabled,
+    globalEnabled,
+    globalOutput,
+    versionedEnabled,
+    versionedOutput,
+  };
+}
+
+async function collectLinkedParentChangelogUnits(config, parentRepoCfg) {
+  const repoCfgs = Array.isArray(config?.repos) ? config.repos : [];
+  const extras = [];
+
+  for (const childRepoCfg of repoCfgs) {
+    const link = childRepoCfg?.git?.linkedSubmoduleInParent;
+    if (!link || link.mode !== 'propagate' || link.parentRepoId !== parentRepoCfg?.id) continue;
+
+    const childRepoRoot = path.resolve(childRepoCfg.root || '.');
+    for (const unit of (childRepoCfg.units || [])) {
+      const varsForInit = { repo: childRepoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
+      const version = await readUnitCurrentVersion(childRepoRoot, unit, varsForInit, false, false);
+      extras.push({
+        id: unit.id,
+        kind: unit.type === 'layer' ? 'layer' : (unit.type === 'app' ? 'app' : 'other'),
+        version,
+        displayName: unit.packageName || unit.npmName || unit.name || unit.id,
+        name: unit.name || unit.id,
+        location: link.submodulePath || path.relative(path.resolve(parentRepoCfg.root || '.'), childRepoRoot).replace(/\\/g, '/'),
+      });
+    }
+  }
+
+  return extras;
+}
+
 export class VersionManager {
   constructor(config = {}) {
     this.config = config;
@@ -217,40 +265,38 @@ export class VersionManager {
     changelog = false,
     noChangelog = false,
   }) {
-    const enabledByConfig = Boolean(repoCfg?.changelog?.enabled);
-    const shouldWrite = (enabledByConfig && !noChangelog) || changelog;
+    const changelogCfg = resolveChangelogConfig(repoCfg);
+    const shouldWrite = (changelogCfg.enabled && !noChangelog) || changelog;
 
     if (!shouldWrite) return null;
     if (dryRun) return null;
     if (!unitResults?.length) return null;
+    if (!changelogCfg.globalEnabled && !changelogCfg.versionedEnabled) return null;
 
-    const output = repoCfg?.changelog?.output || 'CHANGELOG.md';
-    const versionedOutput = repoCfg?.changelog?.versionedOutput;
     const messageUnitId = repoCfg?.git?.messageFromUnit;
     const version = (messageUnitId && unitResults.find((unit) => unit.unitId === messageUnitId)?.to)
       || unitResults.find((unit) => repoCfg?.units?.some((cfgUnit) => cfgUnit.id === unit.unitId && cfgUnit.type === 'app'))?.to
       || unitResults[0]?.to
       || null;
 
+    const extraUnits = await collectLinkedParentChangelogUnits(this.config, repoCfg);
+
     return await writeChangelog({
       repoRoot,
-      output,
-      versionedOutput,
+      globalEnabled: changelogCfg.globalEnabled,
+      globalOutput: changelogCfg.globalOutput,
+      versionedEnabled: changelogCfg.versionedEnabled,
+      versionedOutput: changelogCfg.versionedOutput,
       version,
       releaseDate: new Date(),
       repoCfg,
-      config: this.config,
       unitResults,
       unitMap,
       classifier: this.classifier,
-      resolveRepoRoot: (targetRepoCfg) => path.resolve(targetRepoCfg?.root || '.'),
+      extraUnits,
       readVersion: async (unit) => {
         const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
         return await readUnitCurrentVersion(repoRoot, unit, varsForInit, false, false);
-      },
-      readVersionFromRepo: async (targetRepoRoot, unit) => {
-        const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
-        return await readUnitCurrentVersion(targetRepoRoot, unit, varsForInit, false, false);
       },
     });
   }
