@@ -171,6 +171,37 @@ async function updateParentSubmoduleToSha(parentRoot, submodulePath, sha) {
   await setGitlink(parentRoot, submodulePath, sha);
 }
 
+
+async function applyUnitWrites(repoRoot, unitResults, varsBase, dryRun) {
+  const changes = [];
+  for (const u of (unitResults || [])) {
+    const vars = { ...varsBase, unit: u.unitId, name: u.unitId, prevVersion: u.from, bump: u.bump, version: u.to };
+    for (const step of (u.plannedWrites || [])) {
+      let res;
+      if (step.type === 'json-set') res = await applyJsonSet(repoRoot, step, vars, dryRun);
+      else if (step.type === 'readme-marker') res = await applyReadmeMarker(repoRoot, step, vars, dryRun);
+      else if (step.type === 'text-replace') res = await applyTextReplace(repoRoot, step, vars, dryRun);
+      else throw new Error(`Step sconosciuto: ${step.type} (unit ${u.unitId})`);
+      if (res) changes.push(res);
+    }
+  }
+  return changes;
+}
+
+async function applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, branchName) {
+  if (!pendingSubmoduleUpdates?.[branchName]) return;
+  for (const upd of pendingSubmoduleUpdates[branchName]) {
+    await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
+  }
+}
+
+async function applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun) {
+  if (!releaseBaseFile || !releaseBaseHash) return;
+  const abs = path.join(repoRoot, releaseBaseFile);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
+}
+
 export class VersionManager {
   constructor(config = {}) {
     this.config = config;
@@ -322,7 +353,7 @@ export class VersionManager {
       });
 
       const link = repoCfg?.git?.linkedSubmoduleInParent;
-      if (link?.mode === 'propagate' && link.parentRepoId && link.submodulePath && didGit?.branchHeads) {
+      if (link?.mode === 'propagate' && link.parentRepoId && link.submodulePath && didGit?.committed && didGit?.branchHeads) {
         const parentPending = pendingSubmoduleUpdatesByParent.get(link.parentRepoId) || {};
         for (const [branchName, sha] of Object.entries(didGit.branchHeads)) {
           if (!parentPending[branchName]) parentPending[branchName] = [];
@@ -356,7 +387,7 @@ export class VersionManager {
       return { committed: false, pushed: false, mode: 'no-changes' };
     }
 
-    if (allowDirty) throw new Error('commit/push non consentiti con --allow-dirty');
+    if (!writeOnlyApplyMode && allowDirty) throw new Error('commit/push non consentiti con --allow-dirty');
     if (requireClean) {
       // check iniziale già eseguito in run()
     }
@@ -373,14 +404,17 @@ export class VersionManager {
 
     if (!branches.length) {
       const curBranch = await getCurrentBranch(repoRoot);
+
+      if (writeOnlyApplyMode) {
+        await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+        const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+        return { committed: false, pushed: false, mode: 'write-working-tree', branches: [curBranch], branchHeads: { [curBranch]: headSha } };
+      }
+
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
-      if (pendingSubmoduleUpdates[curBranch]) {
-        for (const upd of pendingSubmoduleUpdates[curBranch]) {
-          await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
-        }
-      }
+      await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
@@ -394,24 +428,27 @@ export class VersionManager {
       }
 
       return {
-        committed: Boolean(doCommit),
+        committed: true,
         pushed: Boolean(doPush),
-        mode: doCommit ? 'commit-per-branch-apply' : 'write-per-branch-apply',
-        branches: Object.keys(branchHeads),
-        branchHeads,
+        mode: 'single-branch-commit',
+        branches: [curBranch],
+        branchHeads: { [curBranch]: newHead },
       };
     }
 
     if (!commitPerBranch) {
       const curBranch = await getCurrentBranch(repoRoot);
+
+      if (writeOnlyApplyMode) {
+        await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+        const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+        return { committed: false, pushed: false, mode: 'write-working-tree', branches: [curBranch], branchHeads: { [curBranch]: headSha } };
+      }
+
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
-      if (pendingSubmoduleUpdates[curBranch]) {
-        for (const upd of pendingSubmoduleUpdates[curBranch]) {
-          await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
-        }
-      }
+      await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
@@ -436,6 +473,21 @@ export class VersionManager {
 
     if (applyPerBranchMode) {
       const originalBranch = await getCurrentBranch(repoRoot);
+
+      if (writeOnlyApplyMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+        await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, originalBranch);
+        const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+        return {
+          committed: false,
+          pushed: false,
+          mode: 'write-working-tree',
+          branches: [originalBranch],
+          branchHeads: { [originalBranch]: headSha },
+        };
+      }
+
       const branchHeads = {};
 
       try {
@@ -477,45 +529,22 @@ export class VersionManager {
             }
           }
 
-          for (const u of unitResults) {
-            const vars = { ...varsBase, unit: u.unitId, name: u.unitId, prevVersion: u.from, bump: u.bump, version: u.to };
-            for (const step of (u.plannedWrites || [])) {
-              if (step.type === 'json-set') await applyJsonSet(repoRoot, step, vars, dryRun);
-              else if (step.type === 'readme-marker') await applyReadmeMarker(repoRoot, step, vars, dryRun);
-              else if (step.type === 'text-replace') await applyTextReplace(repoRoot, step, vars, dryRun);
-              else throw new Error(`Step sconosciuto: ${step.type} (unit ${u.unitId})`);
-            }
-          }
-
-          if (releaseBaseFile && releaseBaseHash) {
-            const abs = path.join(repoRoot, releaseBaseFile);
-            await fs.mkdir(path.dirname(abs), { recursive: true });
-            if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
-          }
-
-          if (pendingSubmoduleUpdates[b.name]) {
-            for (const upd of pendingSubmoduleUpdates[b.name]) {
-              await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
-            }
-          }
+          await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+          await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+          await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, b.name);
 
           const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
           const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
 
-          if (doCommit) {
-            await addAll(repoRoot);
-            await gitCommit(repoRoot, msg);
-            const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
-            branchHeads[b.name] = branchHead;
+          await addAll(repoRoot);
+          await gitCommit(repoRoot, msg);
+          const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+          branchHeads[b.name] = branchHead;
 
-            if (doPush) {
-              const remote = b.remote || (await getDefaultRemote(repoRoot));
-              if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
-              await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`, Boolean(b.forceWithLease));
-            }
-          } else {
-            const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
-            branchHeads[b.name] = branchHead;
+          if (doPush) {
+            const remote = b.remote || (await getDefaultRemote(repoRoot));
+            if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
+            await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`, Boolean(b.forceWithLease));
           }
         }
       } finally {

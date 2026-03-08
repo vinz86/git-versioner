@@ -7,7 +7,7 @@
  * - I path sono relativi alla root del repo.
  * - Template disponibili: {{version}} {{prevVersion}} {{stamp}} {{branch}} {{repo}} {{unit}} {{name}} {{bump}}
  * - stamp formato: DD/MM/YYYY hh:mm
- * - commitPerBranchMode: 'apply'  (consigliato)----> checkout branch -> write -> commit -> push
+ * - commitPerBranchMode: 'apply'  (consigliato)----> write-only: branch corrente; con commit/push: checkout target -> write -> commit -> push
  * - versionsBranch: branch separato per snapshot/version tracking
  * - bumpFrom: permette all'app di ereditare il bump massimo dai layer
  */

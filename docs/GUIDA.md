@@ -571,6 +571,8 @@ Flusso:
 4. commit con messaggio del branch target
 5. push del branch target
 
+Nota: se lanci il tool con `--no-commit --no-push`, in modalita' `apply` le modifiche vengono scritte solo sul branch/worktree corrente del repo, senza fare checkout degli altri branch.
+
 ### `cherry-pick`
 
 Più fragile in caso di conflitti (da testare TODO)
