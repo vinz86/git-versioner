@@ -179,12 +179,19 @@ function upsertReleaseSection(existing, releaseSection, version) {
   return `${normalized.trimEnd()}\n\n${releaseSection.trimEnd()}\n`
 }
 
-export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitResults = [], readVersion }) {
+function joinLocations(prefix, location) {
+  const a = String(prefix || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  const b = String(location || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (a && b) return `${a}/${b}`
+  return a || b || null
+}
+
+async function collectUnitsForRepo({ repoRoot, repoCfg, unitResults = [], readVersion, locationPrefix = null }) {
   const nextVersionByUnit = new Map((unitResults || []).map((unit) => [unit.unitId, unit.to]))
   const units = []
 
   for (const unit of (repoCfg?.units || [])) {
-    const version = nextVersionByUnit.get(unit.id) || await readVersion(unit)
+    const version = nextVersionByUnit.get(unit.id) || await readVersion(repoRoot, unit)
     const displayName = await inferPackageName(repoRoot, unit)
     const kind = unit.type === 'layer' ? 'layer' : (unit.type === 'app' ? 'app' : 'other')
 
@@ -194,8 +201,26 @@ export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitRes
       version,
       displayName,
       name: unit.name || unit.id,
-      location: inferUnitLocation(unit),
+      location: joinLocations(locationPrefix, inferUnitLocation(unit)) || locationPrefix || null,
     })
+  }
+
+  return units
+}
+
+export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitResults = [], readVersion, linkedRepos = [] }) {
+  const units = await collectUnitsForRepo({ repoRoot, repoCfg, unitResults, readVersion })
+
+  for (const linked of (linkedRepos || [])) {
+    const linkedRoot = path.resolve(repoRoot, linked.submodulePath)
+    const linkedUnits = await collectUnitsForRepo({
+      repoRoot: linkedRoot,
+      repoCfg: linked.repoCfg,
+      unitResults: linked.unitResults || [],
+      readVersion,
+      locationPrefix: linked.submodulePath,
+    })
+    units.push(...linkedUnits)
   }
 
   const appUnit = units.find((unit) => unit.kind === 'app')
@@ -238,12 +263,21 @@ export function collectReleaseEntries({ unitMap, classifier, unitsMetaById = {} 
     .filter(Boolean)
 }
 
+function resolveChangelogTargets(changelogCfg = {}) {
+  if (!changelogCfg || changelogCfg.enabled === false) {
+    return { globalEnabled: false, versionedEnabled: false, globalOutput: null, versionedOutput: null }
+  }
+
+  return {
+    globalEnabled: Boolean(changelogCfg?.global?.enabled),
+    versionedEnabled: Boolean(changelogCfg?.versioned?.enabled),
+    globalOutput: changelogCfg?.global?.output || 'CHANGELOG.md',
+    versionedOutput: changelogCfg?.versioned?.output || 'docs/changelogs/CHANGELOG_{{version}}.md',
+  }
+}
+
 export async function writeChangelog({
   repoRoot,
-  globalEnabled = true,
-  globalOutput = 'CHANGELOG.md',
-  versionedEnabled = true,
-  versionedOutput = 'docs/changelogs/CHANGELOG_{{version}}.md',
   version,
   releaseDate = formatReleaseDate(),
   repoCfg,
@@ -251,6 +285,7 @@ export async function writeChangelog({
   unitMap,
   classifier,
   readVersion,
+  linkedRepos = [],
 }) {
   if (!version) throw new Error('Versione release mancante per la generazione del changelog')
   if (typeof readVersion !== 'function') throw new Error('readVersion non disponibile per la generazione del changelog')
@@ -260,6 +295,7 @@ export async function writeChangelog({
     repoCfg,
     unitResults,
     readVersion,
+    linkedRepos,
   })
 
   const unitsMetaById = Object.fromEntries(snapshot.allUnits.map((unit) => [unit.id, unit]))
@@ -273,29 +309,34 @@ export async function writeChangelog({
     entries,
   })
 
-  let writtenGlobalOutput = null
-  if (globalEnabled) {
-    const globalPath = path.join(repoRoot, globalOutput)
+  const targets = resolveChangelogTargets(repoCfg?.changelog)
+  if (!targets.globalEnabled && !targets.versionedEnabled) {
+    return { output: null, releaseOutput: null, version, releaseDate }
+  }
+
+  let output = null
+  let releaseOutputPath = null
+
+  if (targets.globalEnabled) {
+    output = targets.globalOutput
+    const globalPath = path.join(repoRoot, output)
     const existingGlobal = (await fileExists(globalPath)) ? await fs.readFile(globalPath, 'utf8') : GLOBAL_CHANGELOG_HEADER
     const updatedGlobal = upsertReleaseSection(existingGlobal, releaseSection, version)
 
     await fs.mkdir(path.dirname(globalPath), { recursive: true })
     await fs.writeFile(globalPath, updatedGlobal.trimEnd() + '\n', 'utf8')
-    writtenGlobalOutput = globalOutput
   }
 
-  let writtenVersionedOutput = null
-  if (versionedEnabled) {
-    const releaseOutputPath = String(versionedOutput).replace(/\{\{\s*version\s*\}\}/g, version)
+  if (targets.versionedEnabled) {
+    releaseOutputPath = String(targets.versionedOutput).replace(/\{\{\s*version\s*\}\}/g, version)
     const releaseAbs = path.join(repoRoot, releaseOutputPath)
     await fs.mkdir(path.dirname(releaseAbs), { recursive: true })
     await fs.writeFile(releaseAbs, `${GLOBAL_CHANGELOG_HEADER.trimEnd()}\n\n${releaseSection.trimEnd()}\n`, 'utf8')
-    writtenVersionedOutput = releaseOutputPath
   }
 
   return {
-    output: writtenGlobalOutput,
-    releaseOutput: writtenVersionedOutput,
+    output,
+    releaseOutput: releaseOutputPath,
     version,
     releaseDate,
   }

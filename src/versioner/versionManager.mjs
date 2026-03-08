@@ -217,42 +217,40 @@ export class VersionManager {
     changelog = false,
     noChangelog = false,
   }) {
-    const changelogCfg = repoCfg?.changelog;
-    const globallyEnabled = Boolean(changelogCfg?.enabled);
-    const shouldWrite = (globallyEnabled && !noChangelog) || changelog;
+    const enabledByConfig = Boolean(repoCfg?.changelog?.enabled);
+    const hasEnabledTargets = Boolean(repoCfg?.changelog?.global?.enabled) || Boolean(repoCfg?.changelog?.versioned?.enabled);
+    const shouldWrite = !noChangelog && ((enabledByConfig && hasEnabledTargets) || changelog);
 
     if (!shouldWrite) return null;
     if (dryRun) return null;
     if (!unitResults?.length) return null;
 
-    const globalEnabled = Boolean(changelogCfg?.global?.enabled);
-    const versionedEnabled = Boolean(changelogCfg?.versioned?.enabled);
-
-    if (!globalEnabled && !versionedEnabled) return null;
-
-    const globalOutput = changelogCfg?.global?.output || 'CHANGELOG.md';
-    const versionedOutput = changelogCfg?.versioned?.output || 'docs/changelogs/CHANGELOG_{{version}}.md';
     const messageUnitId = repoCfg?.git?.messageFromUnit;
     const version = (messageUnitId && unitResults.find((unit) => unit.unitId === messageUnitId)?.to)
       || unitResults.find((unit) => repoCfg?.units?.some((cfgUnit) => cfgUnit.id === unit.unitId && cfgUnit.type === 'app'))?.to
       || unitResults[0]?.to
       || null;
 
+    const linkedRepos = (this.config?.repos || [])
+      .filter((candidate) => candidate?.git?.linkedSubmoduleInParent?.mode === 'propagate' && candidate.git.linkedSubmoduleInParent.parentRepoId === repoCfg.id)
+      .map((candidate) => ({
+        repoCfg: candidate,
+        submodulePath: candidate.git.linkedSubmoduleInParent.submodulePath,
+        unitResults: [],
+      }));
+
     return await writeChangelog({
       repoRoot,
-      globalEnabled,
-      globalOutput,
-      versionedEnabled,
-      versionedOutput,
       version,
       releaseDate: new Date(),
       repoCfg,
       unitResults,
       unitMap,
       classifier: this.classifier,
-      readVersion: async (unit) => {
+      linkedRepos,
+      readVersion: async (targetRepoRoot, unit) => {
         const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
-        return await readUnitCurrentVersion(repoRoot, unit, varsForInit, false, false);
+        return await readUnitCurrentVersion(targetRepoRoot, unit, varsForInit, false, false);
       },
     });
   }
@@ -664,6 +662,8 @@ export class VersionManager {
           await this.#applyChangelogIfEnabled({
             repoRoot,
             repoCfg,
+            unitResults,
+            unitMap,
             dryRun,
             changelog,
             noChangelog,
