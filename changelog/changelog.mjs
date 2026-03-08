@@ -179,7 +179,15 @@ function upsertReleaseSection(existing, releaseSection, version) {
   return `${normalized.trimEnd()}\n\n${releaseSection.trimEnd()}\n`
 }
 
-export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitResults = [], readVersion }) {
+export async function collectCurrentVersionSnapshot({
+  repoRoot,
+  repoCfg,
+  unitResults = [],
+  readVersion,
+  config,
+  resolveRepoRoot,
+  readVersionFromRepo,
+}) {
   const nextVersionByUnit = new Map((unitResults || []).map((unit) => [unit.unitId, unit.to]))
   const units = []
 
@@ -195,10 +203,42 @@ export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitRes
       displayName,
       name: unit.name || unit.id,
       location: inferUnitLocation(unit),
+      repoId: repoCfg?.id || null,
+      external: false,
     })
   }
 
-  const appUnit = units.find((unit) => unit.kind === 'app')
+  const linkedChildRepos = (config?.repos || []).filter((candidate) =>
+    candidate?.git?.linkedSubmoduleInParent?.mode === 'propagate'
+    && candidate?.git?.linkedSubmoduleInParent?.parentRepoId === repoCfg?.id
+  )
+
+  for (const childRepoCfg of linkedChildRepos) {
+    const childRepoRoot = typeof resolveRepoRoot === 'function'
+      ? resolveRepoRoot(childRepoCfg)
+      : path.resolve(childRepoCfg?.root || '.')
+
+    for (const childUnit of (childRepoCfg?.units || [])) {
+      const version = typeof readVersionFromRepo === 'function'
+        ? await readVersionFromRepo(childRepoRoot, childUnit)
+        : await readVersion(childUnit)
+      const displayName = await inferPackageName(childRepoRoot, childUnit)
+      const kind = childUnit.type === 'layer' ? 'layer' : (childUnit.type === 'app' ? 'app' : 'other')
+
+      units.push({
+        id: childUnit.id,
+        kind,
+        version,
+        displayName,
+        name: childUnit.name || childUnit.id,
+        location: childRepoCfg?.git?.linkedSubmoduleInParent?.submodulePath || inferUnitLocation(childUnit),
+        repoId: childRepoCfg?.id || null,
+        external: true,
+      })
+    }
+  }
+
+  const appUnit = units.find((unit) => unit.kind === 'app' && !unit.external)
     || units.find((unit) => unit.id === repoCfg?.git?.messageFromUnit)
     || units[0]
     || null
@@ -244,10 +284,13 @@ export async function writeChangelog({
   version,
   releaseDate = formatReleaseDate(),
   repoCfg,
+  config,
   unitResults = [],
   unitMap,
   classifier,
   readVersion,
+  readVersionFromRepo,
+  resolveRepoRoot,
   versionedOutput,
 }) {
   if (!version) throw new Error('Versione release mancante per la generazione del changelog')
@@ -258,6 +301,9 @@ export async function writeChangelog({
     repoCfg,
     unitResults,
     readVersion,
+    config,
+    resolveRepoRoot,
+    readVersionFromRepo,
   })
 
   const unitsMetaById = Object.fromEntries(snapshot.allUnits.map((unit) => [unit.id, unit]))

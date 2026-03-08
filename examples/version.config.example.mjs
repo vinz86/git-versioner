@@ -68,6 +68,14 @@ export default {
         enabled: true,
         output: 'CHANGELOG.md',
         versionedOutput: 'docs/changelogs/CHANGELOG_{{version}}.md',
+        global: {
+          enabled: true,
+          output: 'CHANGELOG.md',
+        },
+        versioned: {
+          enabled: true,
+          output: 'docs/changelogs/CHANGELOG_{{version}}.md',
+        },
       },
 
       units: [

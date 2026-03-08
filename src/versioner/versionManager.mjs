@@ -239,12 +239,18 @@ export class VersionManager {
       version,
       releaseDate: new Date(),
       repoCfg,
+      config: this.config,
       unitResults,
       unitMap,
       classifier: this.classifier,
+      resolveRepoRoot: (targetRepoCfg) => path.resolve(targetRepoCfg?.root || '.'),
       readVersion: async (unit) => {
         const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
         return await readUnitCurrentVersion(repoRoot, unit, varsForInit, false, false);
+      },
+      readVersionFromRepo: async (targetRepoRoot, unit) => {
+        const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
+        return await readUnitCurrentVersion(targetRepoRoot, unit, varsForInit, false, false);
       },
     });
   }
@@ -656,8 +662,6 @@ export class VersionManager {
           await this.#applyChangelogIfEnabled({
             repoRoot,
             repoCfg,
-            unitResults,
-            unitMap,
             dryRun,
             changelog,
             noChangelog,
