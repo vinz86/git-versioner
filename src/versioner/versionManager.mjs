@@ -656,6 +656,8 @@ export class VersionManager {
           await this.#applyChangelogIfEnabled({
             repoRoot,
             repoCfg,
+            unitResults,
+            unitMap,
             dryRun,
             changelog,
             noChangelog,
