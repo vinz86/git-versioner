@@ -1,29 +1,22 @@
 /**
  * version.config.example.mjs
  *
- * Config esempio per git-versioner.
+ * Esempio completo per monorepo app + layer interni + repo layer separato.
  *
- * --------------------------------------------------
- * - I path sono relativi alla root del repo.
- * - Template disponibili: {{version}} {{prevVersion}} {{stamp}} {{branch}} {{repo}} {{unit}} {{name}} {{bump}}
- * - stamp formato: DD/MM/YYYY hh:mm
- * - commitPerBranchMode: 'apply'  (consigliato)----> write-only: branch corrente; con commit/push: checkout target -> write -> commit -> push
- * - versionsBranch: branch separato per snapshot/version tracking
- * - bumpFrom: permette all'app di ereditare il bump massimo dai layer
+ * Note utili:
+ * - Il changelog principale viene scritto in CHANGELOG.md
+ * - Ogni release genera anche docs/changelogs/CHANGELOG_<versione>.md
+ * - Il changelog versionato include una sezione "Versioni correnti" con app e layer
+ * - Per i layer conviene valorizzare packageName per avere un nome chiaro nel changelog
  */
 
 export default {
-
-  // Da dove iniziare a leggere i commit nuovi
   baseline: {
-    strategy: 'file', // 'tag' | 'file' | 'none'
+    strategy: 'file',
     file: '.release-base',
-    tagMatch: '*[0-9]*.[0-9]*.[0-9]*'
+    tagMatch: '*[0-9]*.[0-9]*.[0-9]*',
   },
 
-  // preid: 'alpha', // opzionale per prerelease (o beta ecc)
-
-  // Come vengono tradotti i commit in bump semver
   rules: {
     bracket: {
       enabled: true,
@@ -42,10 +35,9 @@ export default {
         VERSION: 'patch',
         UPDATE: 'patch',
         MAJOR: 'major',
-        BREAKING: 'major'
-      }
+        BREAKING: 'major',
+      },
     },
-
     conventional: {
       enabled: true,
       map: {
@@ -57,205 +49,158 @@ export default {
         test: 'patch',
         build: 'patch',
         ci: 'patch',
-        chore: 'patch'
-      }
+        chore: 'patch',
+      },
     },
-
     breaking: { enabled: true },
-
-    // se false i commit senza prefisso non influenzano il bump
-    allowUnprefixed: false
+    allowUnprefixed: false,
   },
 
   repos: [
+    /**
+     * REPO PRINCIPALE: BIBRID
+     */
     {
-      id: 'monorepo',
+      id: 'bibrid',
       root: '.',
 
-      units: [
+      changelog: {
+        enabled: true,
+        output: 'CHANGELOG.md',
+        versionedOutput: 'docs/changelogs/CHANGELOG_{{version}}.md',
+      },
 
-        // APP
+      units: [
         {
           id: 'app',
-          name: 'my-app',
+          name: 'bibrid',
           type: 'app',
-
-          // commit da considerare
           pathFilter: [],
 
-          // file che contiene la versione
-          version: {
-            file: 'package.json',
-            field: 'version'
-          },
+          version: { file: 'package.json', field: 'version' },
 
-          //eredita bump dai layer
-          bumpFrom: ['layer-core', 'layer-ui'],
+          bumpFrom: [
+            'layer-domain',
+            'layer-foundation',
+            'layer-app-server',
+            'layer-platform',
+            'layer-ui-kit',
+            'layer-app-shell',
+          ],
 
-          // modifica i bump dei layer
-          // bumpFromMajor: 'minor',
-          // bumpFromMinor: 'patch',
+          bumpFromMajor: 'minor',
+          bumpFromMinor: 'patch',
 
-          // ignora commit di versioning
           autoBump: {
             enabled: true,
             subjectRe: '\\bVersione?\\b\\s*\\d+\\.\\d+\\.\\d+',
             versionFiles: [
-              'package.json',
-              'version.json',
               '.release-base',
+              'version.json',
+              'package.json',
               'CHANGELOG.md',
-              'README.md'
-            ]
+              'docs/changelogs',
+              'README.md',
+              'pnpm-lock.yaml',
+              'package-lock.json',
+              'yarn.lock',
+              'bun.lockb',
+              'nuxt.config.ts',
+            ],
           },
 
-          //file da aggiornare
           write: [
-            {
-              type: 'json-set',
-              file: 'package.json',
-              set: { version: '{{version}}' }
-            },
-
+            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
+            { type: 'json-set', file: 'apps/mobile-capacitor/package.json', set: { version: '{{version}}' } },
+            { type: 'json-set', file: 'apps/desktop-electron/package.json', set: { version: '{{version}}' } },
             {
               type: 'readme-marker',
               file: 'README.md',
               start: '<!-- APP_VERSION_START -->',
               end: '<!-- APP_VERSION_END -->',
-              template: '> Versione **{{version}}** del {{stamp}}'
+              template: '> Versione **{{version}}** del {{stamp}}',
             },
-
-            {
-              type: 'text-replace',
-              file: 'nuxt.config.ts',
-              replace: [
-                {
-                  pattern: "appVersion\\s*:\\s*['\"][^'\"]+['\"]",
-                  with: "appVersion: '{{version}}'"
-                }
-              ]
-            }
-          ]
+          ],
         },
 
-        //LAYER (esempio)
+        makeLayer('domain', '0.0.0'),
+        makeLayer('foundation', '0.0.0'),
+        makeLayer('app-server', '0.0.1'),
+        makeLayer('platform', '0.0.0'),
+        makeLayer('app-shell', '0.0.0'),
+      ],
+
+      git: {
+        requireClean: true,
+        commit: true,
+        push: true,
+
+        commitPerBranch: true,
+        commitPerBranchMode: 'apply',
+        mergeCurrentBranchIntoTargets: true,
+        mergeCurrentBranchIntoVersionsBranch: false,
+
+        messageFromUnit: 'app',
+        includeCurrentBranch: true,
+        currentBranchMessage: 'Versione {{version}} del {{stamp}} - {{branch}}',
+
+        branches: [
+          { name: 'main', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - main' },
+          { name: 'current_version', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - current_version' },
+        ],
+
+        versionsBranch: 'versions',
+        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions',
+      },
+    },
+
+    /**
+     * REPO SEPARATO: UI-KIT
+     */
+    {
+      id: 'ui-kit-repo',
+      root: 'layers/ui-kit',
+
+      units: [
         {
-          id: 'layer-core',
-          name: 'layer-core',
+          id: 'layer-ui-kit',
+          name: 'ui-kit',
+          packageName: '@bibrid/ui-kit',
           type: 'layer',
-
-          pathFilter: ['layers/layer-core'],
-
+          pathFilter: [],
           version: {
-            file: 'layers/layer-core/version.json',
+            file: 'version.json',
             field: 'version',
             createIfMissing: true,
             default: '0.0.0',
             initial: {
-              name: 'layer-core',
+              name: 'ui-kit',
               version: '0.0.0',
-              date: '{{stamp}}'
-            }
-          },
-
-          write: [
-            {
-              type: 'json-set',
-              file: 'layers/layer-core/version.json',
-              createIfMissing: true,
-              initial: {
-                name: 'layer-core',
-                version: '0.0.0',
-                date: '{{stamp}}'
-              },
-              set: {
-                name: 'layer-core',
-                version: '{{version}}',
-                date: '{{stamp}}'
-              }
+              date: '{{stamp}}',
             },
-
+          },
+          write: [
             {
               type: 'json-set',
-              file: 'layers/layer-core/package.json',
-              set: { version: '{{version}}' }
-            }
-          ]
-        }
-      ],
-
-      //GIT
-      git: {
-
-        requireClean: true,
-
-        commit: true,
-        push: true,
-
-        messageFromUnit: 'app',
-        message: 'Versione {{version}} del {{stamp}} - {{branch}}',
-
-        // commit separati per branch
-        commitPerBranch: true,
-        commitPerBranchMode: 'apply',
-
-        // merge branch corrente nei target
-        mergeCurrentBranchIntoTargets: true,
-
-        includeCurrentBranch: true,
-        currentBranchMessage: 'Versione {{version}} del {{stamp}} - {{branch}}',
-
-        // branch target
-        branches: [
-          {
-            name: 'main',
-            remote: 'origin',
-            message: 'Versione {{version}} del {{stamp}} - main'
-          },
-          {
-            name: 'current_version',
-            remote: 'origin',
-            message: 'Versione {{version}} del {{stamp}} - current_version'
-          }
-        ],
-
-        // branch snapshot versioni
-        versionsBranch: 'versions',
-        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions',
-
-        // mantiene versions lineare
-        mergeCurrentBranchIntoVersionsBranch: false,
-
-        // versionsBranchForce: 'force-with-lease'
-      }
-    },
-
-    // ESEMPIO REPO SEPARATO
-    {
-      id: 'layer-external',
-      root: '../layer-external-repo',
-
-      units: [
-        {
-          id: 'layer-external',
-          name: 'layer-external',
-          type: 'layer',
-
-          pathFilter: [],
-
-          version: {
-            file: 'package.json',
-            field: 'version'
-          },
-
-          write: [
+              file: 'version.json',
+              createIfMissing: true,
+              initial: { name: 'ui-kit', version: '0.0.0', date: '{{stamp}}' },
+              set: { name: 'ui-kit', version: '{{version}}', date: '{{stamp}}' },
+            },
             {
               type: 'json-set',
               file: 'package.json',
-              set: { version: '{{version}}' }
-            }
-          ]
-        }
+              set: { version: '{{version}}' },
+            },
+            {
+              type: 'readme-marker',
+              file: 'README.md',
+              start: '<!-- LAYER_VERSION_START -->',
+              end: '<!-- LAYER_VERSION_END -->',
+              template: 'Version {{version}} del {{stamp}}',
+            },
+          ],
+        },
       ],
 
       git: {
@@ -263,19 +208,76 @@ export default {
         commit: true,
         push: true,
 
-        commitPerBranch: false,
+        commitPerBranch: true,
+        commitPerBranchMode: 'apply',
+        mergeCurrentBranchIntoTargets: true,
+        mergeCurrentBranchIntoVersionsBranch: false,
 
-        messageFromUnit: 'layer-external',
-        message: 'Versione {{version}} del {{stamp}} - {{branch}}',
+        messageFromUnit: 'layer-ui-kit',
+        includeCurrentBranch: true,
+        currentBranchMessage: 'Versione {{version}} del {{stamp}} - ui-kit:{{branch}}',
+        message: 'Versione {{version}} del {{stamp}} - ui-kit:{{branch}}',
 
         branches: [
-          {
-            name: 'main',
-            remote: 'origin',
-            message: 'Versione {{version}} del {{stamp}} - main'
-          }
-        ]
-      }
-    }
-  ]
+          { name: 'main', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - ui-kit:main' },
+          { name: 'current_version', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - ui-kit:current_version' },
+        ],
+
+        versionsBranch: 'versions',
+        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - ui-kit:versions',
+
+        linkedSubmoduleInParent: {
+          mode: 'propagate',
+          parentRepoId: 'bibrid',
+          submodulePath: 'layers/ui-kit',
+        },
+      },
+    },
+  ],
 };
+
+function makeLayer(layerDirName, defaultVersion) {
+  const base = `layers/${layerDirName}`;
+
+  return {
+    id: `layer-${layerDirName}`,
+    name: layerDirName,
+    packageName: `@bibrid/${layerDirName}`,
+    type: 'layer',
+    pathFilter: [base],
+
+    version: {
+      file: `${base}/version.json`,
+      field: 'version',
+      createIfMissing: true,
+      default: defaultVersion,
+      initial: {
+        name: layerDirName,
+        version: defaultVersion,
+        date: '{{stamp}}',
+      },
+    },
+
+    write: [
+      {
+        type: 'json-set',
+        file: `${base}/version.json`,
+        createIfMissing: true,
+        initial: { name: layerDirName, version: defaultVersion, date: '{{stamp}}' },
+        set: { name: layerDirName, version: '{{version}}', date: '{{stamp}}' },
+      },
+      {
+        type: 'json-set',
+        file: `${base}/package.json`,
+        set: { version: '{{version}}' },
+      },
+      {
+        type: 'readme-marker',
+        file: `${base}/README.md`,
+        start: '<!-- LAYER_VERSION_START -->',
+        end: '<!-- LAYER_VERSION_END -->',
+        template: 'Version {{version}} del {{stamp}}',
+      },
+    ],
+  };
+}

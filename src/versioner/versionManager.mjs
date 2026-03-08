@@ -208,21 +208,45 @@ export class VersionManager {
     this.classifier = new CommitClassifier(config.rules || {});
   }
 
-  async #applyChangelogIfEnabled({ repoRoot, repoCfg, dryRun, changelog = false, noChangelog = false }) {
+  async #applyChangelogIfEnabled({
+    repoRoot,
+    repoCfg,
+    unitResults,
+    unitMap,
+    dryRun,
+    changelog = false,
+    noChangelog = false,
+  }) {
     const enabledByConfig = Boolean(repoCfg?.changelog?.enabled);
     const shouldWrite = (enabledByConfig && !noChangelog) || changelog;
 
     if (!shouldWrite) return null;
     if (dryRun) return null;
+    if (!unitResults?.length) return null;
 
     const output = repoCfg?.changelog?.output || 'CHANGELOG.md';
+    const versionedOutput = repoCfg?.changelog?.versionedOutput;
+    const messageUnitId = repoCfg?.git?.messageFromUnit;
+    const version = (messageUnitId && unitResults.find((unit) => unit.unitId === messageUnitId)?.to)
+      || unitResults.find((unit) => repoCfg?.units?.some((cfgUnit) => cfgUnit.id === unit.unitId && cfgUnit.type === 'app'))?.to
+      || unitResults[0]?.to
+      || null;
 
-    await writeChangelog({
+    return await writeChangelog({
       repoRoot,
       output,
+      versionedOutput,
+      version,
+      releaseDate: new Date(),
+      repoCfg,
+      unitResults,
+      unitMap,
+      classifier: this.classifier,
+      readVersion: async (unit) => {
+        const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
+        return await readUnitCurrentVersion(repoRoot, unit, varsForInit, false, false);
+      },
     });
-
-    return output;
   }
 
   async run({
@@ -361,6 +385,8 @@ export class VersionManager {
         await this.#applyChangelogIfEnabled({
           repoRoot,
           repoCfg,
+          unitResults,
+          unitMap,
           dryRun,
           changelog,
           noChangelog,
@@ -375,6 +401,7 @@ export class VersionManager {
         repoRoot,
         repoCfg,
         unitResults,
+        unitMap,
         stamp,
         doCommit,
         doPush,
@@ -409,6 +436,7 @@ export class VersionManager {
                       repoRoot,
                       repoCfg,
                       unitResults,
+                      unitMap,
                       stamp,
                       doCommit,
                       doPush,
@@ -459,10 +487,14 @@ export class VersionManager {
       const curBranch = await getCurrentBranch(repoRoot);
 
       if (writeOnlyApplyMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
         await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
         await this.#applyChangelogIfEnabled({
           repoRoot,
           repoCfg,
+          unitResults,
+          unitMap,
           dryRun,
           changelog,
           noChangelog,
@@ -478,6 +510,8 @@ export class VersionManager {
       await this.#applyChangelogIfEnabled({
         repoRoot,
         repoCfg,
+        unitResults,
+        unitMap,
         dryRun,
         changelog,
         noChangelog,
@@ -507,7 +541,18 @@ export class VersionManager {
       const curBranch = await getCurrentBranch(repoRoot);
 
       if (writeOnlyApplyMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
         await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          unitResults,
+          unitMap,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
         const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
         return { committed: false, pushed: false, mode: 'write-working-tree', branches: [curBranch], branchHeads: { [curBranch]: headSha } };
       }
@@ -548,6 +593,8 @@ export class VersionManager {
         await this.#applyChangelogIfEnabled({
           repoRoot,
           repoCfg,
+          unitResults,
+          unitMap,
           dryRun,
           changelog,
           noChangelog,
