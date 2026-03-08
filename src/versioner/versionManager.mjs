@@ -29,6 +29,7 @@ import {
   pushHeadToBranch,
   getDefaultRemote,
 } from './git/git.mjs';
+import { writeChangelog } from '../../changelog/changelog.mjs';
 
 function nowSafeStamp() {
   const d = new Date();
@@ -51,15 +52,15 @@ function remapInheritedBump(depBump, unit) {
 
 function parseStatusPaths(status) {
   return String(status || '')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => {
-      const raw = line.slice(3).trim();
-      const pathPart = raw.includes(' -> ') ? raw.split(' -> ').pop() : raw;
-      return pathPart?.trim() || '';
-    })
-    .filter(Boolean);
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => {
+        const raw = line.slice(3).trim();
+        const pathPart = raw.includes(' -> ') ? raw.split(' -> ').pop() : raw;
+        return pathPart?.trim() || '';
+      })
+      .filter(Boolean);
 }
 
 function statusHasOnlyAllowedPaths(status, allowedPaths) {
@@ -86,8 +87,8 @@ async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allow
     if (!canCreate) throw new Error(`File versione mancante: ${unit.version.file} (repo: ${repoRoot})`);
 
     const initial = unit.version.initial
-      ? renderObjectTemplates(unit.version.initial, varsForInit)
-      : { name: unit.name || unit.id, [field]: defV, date: varsForInit?.stamp };
+        ? renderObjectTemplates(unit.version.initial, varsForInit)
+        : { name: unit.name || unit.id, [field]: defV, date: varsForInit?.stamp };
 
     if (initial[field] == null) initial[field] = defV;
 
@@ -171,7 +172,6 @@ async function updateParentSubmoduleToSha(parentRoot, submodulePath, sha) {
   await setGitlink(parentRoot, submodulePath, sha);
 }
 
-
 async function applyUnitWrites(repoRoot, unitResults, varsBase, dryRun) {
   const changes = [];
   for (const u of (unitResults || [])) {
@@ -208,7 +208,32 @@ export class VersionManager {
     this.classifier = new CommitClassifier(config.rules || {});
   }
 
-  async run({ since = null, commit = null, push = null, allowDirty = false, dryRun = false } = {}) {
+  async #applyChangelogIfEnabled({ repoRoot, repoCfg, dryRun, changelog = false, noChangelog = false }) {
+    const enabledByConfig = Boolean(repoCfg?.changelog?.enabled);
+    const shouldWrite = (enabledByConfig && !noChangelog) || changelog;
+
+    if (!shouldWrite) return null;
+    if (dryRun) return null;
+
+    const output = repoCfg?.changelog?.output || 'CHANGELOG.md';
+
+    await writeChangelog({
+      repoRoot,
+      output,
+    });
+
+    return output;
+  }
+
+  async run({
+              since = null,
+              commit = null,
+              push = null,
+              allowDirty = false,
+              dryRun = false,
+              changelog = false,
+              noChangelog = false,
+            } = {}) {
     const repoCfgs = this.config.repos || [];
     if (!repoCfgs.length) throw new Error('Config non valida: manca "repos"');
 
@@ -332,6 +357,16 @@ export class VersionManager {
         await writeReleaseBase(repoRoot, fileName, newestRelevantHash, dryRun);
       }
 
+      if (!applyPerBranchMode) {
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
+      }
+
       const doCommit = (commit === null) ? Boolean(repoCfg.git?.commit ?? true) : Boolean(commit);
       const doPush = (push === null) ? Boolean(repoCfg.git?.push ?? false) : Boolean(push);
       const pendingSubmoduleUpdates = pendingSubmoduleUpdatesByParent.get(repoCfg.id) || {};
@@ -350,6 +385,8 @@ export class VersionManager {
         releaseBaseHash: newestRelevantHash,
         releaseBaseFile: (this.config.baseline?.strategy === 'file') ? (this.config.baseline?.file || '.release-base') : null,
         pendingSubmoduleUpdates,
+        changelog,
+        noChangelog,
       });
 
       const link = repoCfg?.git?.linkedSubmoduleInParent;
@@ -368,7 +405,23 @@ export class VersionManager {
     return { stamp, results };
   }
 
-  async #gitActions({ repoRoot, repoCfg, unitResults, stamp, doCommit, doPush, allowDirty, dryRun, requireClean, applyPerBranchMode, releaseBaseHash, releaseBaseFile, pendingSubmoduleUpdates = {} }) {
+  async #gitActions({
+                      repoRoot,
+                      repoCfg,
+                      unitResults,
+                      stamp,
+                      doCommit,
+                      doPush,
+                      allowDirty,
+                      dryRun,
+                      requireClean,
+                      applyPerBranchMode,
+                      releaseBaseHash,
+                      releaseBaseFile,
+                      pendingSubmoduleUpdates = {},
+                      changelog = false,
+                      noChangelog = false,
+                    }) {
     if (dryRun) return { committed: false, pushed: false, mode: 'dry-run' };
 
     const writeOnlyApplyMode = applyPerBranchMode && !doCommit && !doPush;
@@ -397,8 +450,8 @@ export class VersionManager {
     const commitPerBranch = Boolean(gitCfg.commitPerBranch);
 
     const versionForMessage = (gitCfg.messageFromUnit && unitResults.find((u) => u.unitId === gitCfg.messageFromUnit)?.to)
-      || unitResults[0]?.to
-      || '0.0.0';
+        || unitResults[0]?.to
+        || '0.0.0';
 
     const varsBase = { repo: repoCfg.id || '', version: versionForMessage, stamp };
 
@@ -407,6 +460,13 @@ export class VersionManager {
 
       if (writeOnlyApplyMode) {
         await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
         const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
         return { committed: false, pushed: false, mode: 'write-working-tree', branches: [curBranch], branchHeads: { [curBranch]: headSha } };
       }
@@ -415,6 +475,13 @@ export class VersionManager {
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
       await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+      await this.#applyChangelogIfEnabled({
+        repoRoot,
+        repoCfg,
+        dryRun,
+        changelog,
+        noChangelog,
+      });
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
@@ -478,6 +545,13 @@ export class VersionManager {
         await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
         await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
         await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, originalBranch);
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
         const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
         return {
           committed: false,
@@ -516,9 +590,9 @@ export class VersionManager {
 
           const isVersionsBranchTarget = Boolean(b.isVersionsBranch) || (gitCfg.versionsBranch && b.name === gitCfg.versionsBranch);
           const shouldMergeSourceBranch = (
-            b.name !== originalBranch
-            && (gitCfg.mergeCurrentBranchIntoTargets !== false)
-            && (!isVersionsBranchTarget || gitCfg.mergeCurrentBranchIntoVersionsBranch === true)
+              b.name !== originalBranch
+              && (gitCfg.mergeCurrentBranchIntoTargets !== false)
+              && (!isVersionsBranchTarget || gitCfg.mergeCurrentBranchIntoVersionsBranch === true)
           );
 
           if (shouldMergeSourceBranch) {
@@ -532,6 +606,13 @@ export class VersionManager {
           await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
           await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
           await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, b.name);
+          await this.#applyChangelogIfEnabled({
+            repoRoot,
+            repoCfg,
+            dryRun,
+            changelog,
+            noChangelog,
+          });
 
           const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
           const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
@@ -551,7 +632,13 @@ export class VersionManager {
         await checkout(repoRoot, originalBranch);
       }
 
-      return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-apply', branches: Object.keys(branchHeads), branchHeads };
+      return {
+        committed: true,
+        pushed: Boolean(doPush),
+        mode: 'commit-per-branch-apply',
+        branches: Object.keys(branchHeads),
+        branchHeads,
+      };
     }
 
     const originalBranch = await getCurrentBranch(repoRoot);

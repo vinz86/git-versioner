@@ -13,6 +13,7 @@
       allowDirty: false,
       dryRun: false,
       preid: null,
+      changelog: null
     };
 
     for (let i = 2; i < argv.length; i++) {
@@ -21,6 +22,8 @@
       else if (a === '--since') args.since = argv[++i];
       else if (a === '--commit') args.commit = true;
       else if (a === '--no-commit') args.commit = false;
+      else if (a === '--changelog') args.changelog = true;
+      else if (a === '--no-changelog') args.changelog = false;
       else if (a === '--push') args.push = true;
       else if (a === '--no-push') args.push = false;
       else if (a === '--allow-dirty') args.allowDirty = true;
@@ -55,6 +58,7 @@
       push: args.push,
       allowDirty: args.allowDirty,
       dryRun: args.dryRun,
+      changelog: args.changelog,
     });
 
     // output sintetico
