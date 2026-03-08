@@ -73,6 +73,10 @@ export async function addPath(cwd, filePath) {
   await git(['add', filePath], { cwd });
 }
 
+export async function setGitlink(cwd, filePath, sha) {
+  await git(['update-index', '--cacheinfo', `160000,${sha},${filePath}`], { cwd });
+}
+
 export async function checkoutNew(cwd, branch) {
   await git(['checkout', '-b', branch], { cwd });
 }

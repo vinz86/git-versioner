@@ -16,9 +16,9 @@ import {
   diffNameOnly,
   addAll,
   addPath,
+  setGitlink,
   commit as gitCommit,
   checkout,
-  checkoutRef,
   checkoutNew,
   branchDelete,
   cherryPick,
@@ -168,9 +168,7 @@ async function isAutoBumpCommit(repoRoot, commitHash, subject, autoCfg) {
 }
 
 async function updateParentSubmoduleToSha(parentRoot, submodulePath, sha) {
-  const submoduleAbs = path.join(parentRoot, submodulePath);
-  await checkoutRef(submoduleAbs, sha);
-  await addPath(parentRoot, submodulePath);
+  await setGitlink(parentRoot, submodulePath, sha);
 }
 
 export class VersionManager {
