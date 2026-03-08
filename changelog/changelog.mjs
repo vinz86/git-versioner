@@ -179,7 +179,7 @@ function upsertReleaseSection(existing, releaseSection, version) {
   return `${normalized.trimEnd()}\n\n${releaseSection.trimEnd()}\n`
 }
 
-export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitResults = [], readVersion, extraUnits = [] }) {
+export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitResults = [], readVersion }) {
   const nextVersionByUnit = new Map((unitResults || []).map((unit) => [unit.unitId, unit.to]))
   const units = []
 
@@ -195,18 +195,6 @@ export async function collectCurrentVersionSnapshot({ repoRoot, repoCfg, unitRes
       displayName,
       name: unit.name || unit.id,
       location: inferUnitLocation(unit),
-    })
-  }
-
-  for (const extra of (extraUnits || [])) {
-    if (!extra) continue
-    units.push({
-      id: extra.id,
-      kind: extra.kind || 'other',
-      version: extra.version || '0.0.0',
-      displayName: extra.displayName || extra.name || extra.id,
-      name: extra.name || extra.id,
-      location: extra.location || null,
     })
   }
 
@@ -252,7 +240,10 @@ export function collectReleaseEntries({ unitMap, classifier, unitsMetaById = {} 
 
 export async function writeChangelog({
   repoRoot,
-  output = 'CHANGELOG.md',
+  globalEnabled = true,
+  globalOutput = 'CHANGELOG.md',
+  versionedEnabled = true,
+  versionedOutput = 'docs/changelogs/CHANGELOG_{{version}}.md',
   version,
   releaseDate = formatReleaseDate(),
   repoCfg,
@@ -260,11 +251,6 @@ export async function writeChangelog({
   unitMap,
   classifier,
   readVersion,
-  globalEnabled = true,
-  globalOutput = 'CHANGELOG.md',
-  versionedEnabled = true,
-  versionedOutput,
-  extraUnits = [],
 }) {
   if (!version) throw new Error('Versione release mancante per la generazione del changelog')
   if (typeof readVersion !== 'function') throw new Error('readVersion non disponibile per la generazione del changelog')
@@ -274,7 +260,6 @@ export async function writeChangelog({
     repoCfg,
     unitResults,
     readVersion,
-    extraUnits,
   })
 
   const unitsMetaById = Object.fromEntries(snapshot.allUnits.map((unit) => [unit.id, unit]))
@@ -288,21 +273,29 @@ export async function writeChangelog({
     entries,
   })
 
-  const globalPath = path.join(repoRoot, output)
-  const existingGlobal = (await fileExists(globalPath)) ? await fs.readFile(globalPath, 'utf8') : GLOBAL_CHANGELOG_HEADER
-  const updatedGlobal = upsertReleaseSection(existingGlobal, releaseSection, version)
+  let writtenGlobalOutput = null
+  if (globalEnabled) {
+    const globalPath = path.join(repoRoot, globalOutput)
+    const existingGlobal = (await fileExists(globalPath)) ? await fs.readFile(globalPath, 'utf8') : GLOBAL_CHANGELOG_HEADER
+    const updatedGlobal = upsertReleaseSection(existingGlobal, releaseSection, version)
 
-  await fs.mkdir(path.dirname(globalPath), { recursive: true })
-  await fs.writeFile(globalPath, updatedGlobal.trimEnd() + '\n', 'utf8')
+    await fs.mkdir(path.dirname(globalPath), { recursive: true })
+    await fs.writeFile(globalPath, updatedGlobal.trimEnd() + '\n', 'utf8')
+    writtenGlobalOutput = globalOutput
+  }
 
-  const releaseOutputPath = String(versionedOutput || `docs/changelogs/CHANGELOG_${version}.md`).replace(/\{\{\s*version\s*\}\}/g, version)
-  const releaseAbs = path.join(repoRoot, releaseOutputPath)
-  await fs.mkdir(path.dirname(releaseAbs), { recursive: true })
-  await fs.writeFile(releaseAbs, `${GLOBAL_CHANGELOG_HEADER.trimEnd()}\n\n${releaseSection.trimEnd()}\n`, 'utf8')
+  let writtenVersionedOutput = null
+  if (versionedEnabled) {
+    const releaseOutputPath = String(versionedOutput).replace(/\{\{\s*version\s*\}\}/g, version)
+    const releaseAbs = path.join(repoRoot, releaseOutputPath)
+    await fs.mkdir(path.dirname(releaseAbs), { recursive: true })
+    await fs.writeFile(releaseAbs, `${GLOBAL_CHANGELOG_HEADER.trimEnd()}\n\n${releaseSection.trimEnd()}\n`, 'utf8')
+    writtenVersionedOutput = releaseOutputPath
+  }
 
   return {
-    output,
-    releaseOutput: releaseOutputPath,
+    output: writtenGlobalOutput,
+    releaseOutput: writtenVersionedOutput,
     version,
     releaseDate,
   }

@@ -4,6 +4,7 @@
  * Esempio completo per monorepo app + layer interni + repo layer separato.
  *
  * Note utili:
+ * - Il changelog usa solo la config nuova: global + versioned
  * - Il changelog principale viene scritto in CHANGELOG.md
  * - Ogni release genera anche docs/changelogs/CHANGELOG_<versione>.md
  * - Il changelog versionato include una sezione "Versioni correnti" con app e layer
@@ -67,7 +68,7 @@ export default {
       changelog: {
         enabled: true,
         global: {
-          enabled: false,
+          enabled: true,
           output: 'CHANGELOG.md',
         },
         versioned: {
