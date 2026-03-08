@@ -338,8 +338,12 @@ export class VersionManager {
   }
 
   async #gitActions({ repoRoot, repoCfg, unitResults, stamp, doCommit, doPush, allowDirty, dryRun, requireClean, applyPerBranchMode, releaseBaseHash, releaseBaseFile, pendingSubmoduleUpdates = {} }) {
-    if (!doCommit && !doPush) return { committed: false, pushed: false, mode: 'none' };
     if (dryRun) return { committed: false, pushed: false, mode: 'dry-run' };
+
+    const writeOnlyApplyMode = applyPerBranchMode && !doCommit && !doPush;
+    if (!writeOnlyApplyMode && !doCommit && !doPush) {
+      return { committed: false, pushed: false, mode: 'none' };
+    }
 
     const status = await getStatusPorcelain(repoRoot);
     const hasPendingSubmoduleUpdates = Object.keys(pendingSubmoduleUpdates || {}).length > 0;
@@ -389,7 +393,13 @@ export class VersionManager {
         }
       }
 
-      return { committed: true, pushed: Boolean(doPush), mode: 'single-branch', branch: curBranch, branchHeads: { [curBranch]: newHead } };
+      return {
+        committed: Boolean(doCommit),
+        pushed: Boolean(doPush),
+        mode: doCommit ? 'commit-per-branch-apply' : 'write-per-branch-apply',
+        branches: Object.keys(branchHeads),
+        branchHeads,
+      };
     }
 
     if (!commitPerBranch) {
@@ -492,15 +502,20 @@ export class VersionManager {
           const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
           const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
 
-          await addAll(repoRoot);
-          await gitCommit(repoRoot, msg);
-          const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
-          branchHeads[b.name] = branchHead;
+          if (doCommit) {
+            await addAll(repoRoot);
+            await gitCommit(repoRoot, msg);
+            const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+            branchHeads[b.name] = branchHead;
 
-          if (doPush) {
-            const remote = b.remote || (await getDefaultRemote(repoRoot));
-            if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
-            await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`, Boolean(b.forceWithLease));
+            if (doPush) {
+              const remote = b.remote || (await getDefaultRemote(repoRoot));
+              if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
+              await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`, Boolean(b.forceWithLease));
+            }
+          } else {
+            const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+            branchHeads[b.name] = branchHead;
           }
         }
       } finally {
