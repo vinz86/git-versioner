@@ -136,10 +136,18 @@ export default {
         makeLayer('app-shell', '0.0.0'),
       ],
 
+      preflight: {
+        commands: [
+          'npm run check:guardrails',
+          'npm run build',
+        ],
+      },
+
       git: {
         requireClean: true,
         commit: true,
         push: true,
+        autoPushGeneratedLockfile: true,
 
         commitPerBranch: true,
         commitPerBranchMode: 'apply',

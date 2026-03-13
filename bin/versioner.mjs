@@ -13,7 +13,8 @@
       allowDirty: false,
       dryRun: false,
       preid: null,
-      changelog: null
+      changelog: null,
+      autoPushGeneratedLockfile: null
     };
 
     for (let i = 2; i < argv.length; i++) {
@@ -29,9 +30,11 @@
       else if (a === '--allow-dirty') args.allowDirty = true;
       else if (a === '--dry-run') args.dryRun = true;
       else if (a === '--preid') args.preid = argv[++i];
+      else if (a === '--auto-push-generated-lockfile') args.autoPushGeneratedLockfile = true;
+      else if (a === '--no-auto-push-generated-lockfile') args.autoPushGeneratedLockfile = false;
       else if (a === '-h' || a === '--help') {
         console.log(`Uso:
-  node bin/versioner.mjs --config version.config.mjs [--since <tag|hash>] [--commit|--no-commit] [--push|--no-push] [--allow-dirty] [--dry-run] [--preid alpha]
+  node bin/versioner.mjs --config version.config.mjs [--since <tag|hash>] [--commit|--no-commit] [--push|--no-push] [--auto-push-generated-lockfile|--no-auto-push-generated-lockfile] [--allow-dirty] [--dry-run] [--preid alpha]
 `);
         process.exit(0);
       }
@@ -59,6 +62,7 @@
       allowDirty: args.allowDirty,
       dryRun: args.dryRun,
       changelog: args.changelog,
+      autoPushGeneratedLockfile: args.autoPushGeneratedLockfile,
     });
 
     // output sintetico

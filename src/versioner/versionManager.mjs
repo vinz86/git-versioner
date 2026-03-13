@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { exec as execCb } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { CommitClassifier } from './commitClassifier.mjs';
 import { bumpSemver, parseSemver, maxBumpKind } from './semver.mjs';
@@ -30,6 +32,8 @@ import {
   getDefaultRemote,
 } from './git/git.mjs';
 import { writeChangelog } from '../../changelog/changelog.mjs';
+
+const execAsync = promisify(execCb);
 
 function nowSafeStamp() {
   const d = new Date();
@@ -68,6 +72,29 @@ function statusHasOnlyAllowedPaths(status, allowedPaths) {
   if (!allowed.size) return false;
   const paths = parseStatusPaths(status);
   return paths.length > 0 && paths.every((p) => allowed.has(p) || [...allowed].some((a) => p === a || p.startsWith(`${a}/`)));
+}
+
+function getMatchingPaths(status, allowedPaths) {
+  const allowed = (allowedPaths || []).filter(Boolean).map(String);
+  if (!allowed.length) return [];
+  return parseStatusPaths(status).filter((p) => allowed.some((a) => p === a || p.startsWith(`${a}/`)));
+}
+
+function statusHasOnlyAllowedAndGeneratedPaths(status, allowedPaths, generatedPaths) {
+  const combined = [...(allowedPaths || []), ...(generatedPaths || [])];
+  return statusHasOnlyAllowedPaths(status, combined);
+}
+
+async function runCommand(command, cwd) {
+  try {
+    const { stdout, stderr } = await execAsync(command, { cwd, maxBuffer: 10 * 1024 * 1024 });
+    return { stdout, stderr };
+  } catch (e) {
+    const stdout = e?.stdout?.toString?.() || '';
+    const stderr = e?.stderr?.toString?.() || '';
+    const details = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
+    throw new Error(`Comando preflight fallito: ${command}${details ? `\n${details}` : ''}`);
+  }
 }
 
 async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allowCreate = true) {
@@ -168,6 +195,17 @@ async function isAutoBumpCommit(repoRoot, commitHash, subject, autoCfg) {
   return ok;
 }
 
+async function isGeneratedLockfileSyncCommit(repoRoot, commitHash, subject) {
+  const subjectRe = /^chore\(versioner\): sync generated package-lock\.json(?:\b|$)/i;
+  if (!subjectRe.test(subject ?? '')) return false;
+
+  const paths = await diffNameOnly(repoRoot, commitHash);
+  return paths.length > 0 && paths.every((p) => {
+    const pp = p.replace(/\\/g, '/');
+    return pp === 'package-lock.json' || pp.endsWith('/package-lock.json');
+  });
+}
+
 async function updateParentSubmoduleToSha(parentRoot, submodulePath, sha) {
   await setGitlink(parentRoot, submodulePath, sha);
 }
@@ -206,6 +244,29 @@ export class VersionManager {
   constructor(config = {}) {
     this.config = config;
     this.classifier = new CommitClassifier(config.rules || {});
+  }
+
+  async #runPreflightCommands({ repoRoot, repoCfg, dryRun }) {
+    const commands = repoCfg?.preflight?.commands || [];
+    if (!Array.isArray(commands) || !commands.length) return;
+    if (dryRun) return;
+
+    for (const command of commands) {
+      if (!command || !String(command).trim()) continue;
+      await runCommand(String(command), repoRoot);
+    }
+  }
+
+  async #autoPushGeneratedLockfile({ repoRoot, repoCfg, status }) {
+    const files = getMatchingPaths(status, ['package-lock.json']);
+    if (!files.length) return false;
+
+    const msg = 'chore(versioner): sync generated package-lock.json';
+
+    for (const file of files) await addPath(repoRoot, file);
+    await gitCommit(repoRoot, msg);
+    await push(repoRoot);
+    return true;
   }
 
   async #applyChangelogIfEnabled({
@@ -263,6 +324,7 @@ export class VersionManager {
               dryRun = false,
               changelog = false,
               noChangelog = false,
+              autoPushGeneratedLockfile = null,
             } = {}) {
     const repoCfgs = this.config.repos || [];
     if (!repoCfgs.length) throw new Error('Config non valida: manca "repos"');
@@ -295,10 +357,36 @@ export class VersionManager {
       if (!(await isWorkTree(repoRoot))) throw new Error(`Non è un work tree git: ${repoRoot}`);
 
       const requireClean = Boolean(repoCfg.git?.requireClean);
-      const initialStatus = await getStatusPorcelain(repoRoot);
+      const doCommit = (commit === null) ? Boolean(repoCfg.git?.commit ?? true) : Boolean(commit);
+      const doPush = (push === null) ? Boolean(repoCfg.git?.push ?? false) : Boolean(push);
+      const shouldAutoPushGeneratedLockfile = (autoPushGeneratedLockfile === null)
+        ? Boolean(repoCfg.git?.autoPushGeneratedLockfile ?? false)
+        : Boolean(autoPushGeneratedLockfile);
+
+      let initialStatus = await getStatusPorcelain(repoRoot);
       const allowedDirtyPaths = (childLinks.get(repoCfg.id) || []).map((x) => x.submodulePath);
+
+      if (initialStatus && !allowDirty && requireClean && shouldAutoPushGeneratedLockfile && doCommit && doPush
+        && statusHasOnlyAllowedAndGeneratedPaths(initialStatus, allowedDirtyPaths, ['package-lock.json'])) {
+        await this.#autoPushGeneratedLockfile({ repoRoot, repoCfg, status: initialStatus });
+        initialStatus = await getStatusPorcelain(repoRoot);
+      }
+
       if (initialStatus && !allowDirty && requireClean && !statusHasOnlyAllowedPaths(initialStatus, allowedDirtyPaths)) {
         throw new Error(`Repo non pulito: ${repoRoot}\n${initialStatus}`);
+      }
+
+      await this.#runPreflightCommands({ repoRoot, repoCfg, dryRun });
+
+      let postPreflightStatus = await getStatusPorcelain(repoRoot);
+      if (postPreflightStatus && !allowDirty && requireClean && shouldAutoPushGeneratedLockfile && doCommit && doPush
+        && statusHasOnlyAllowedAndGeneratedPaths(postPreflightStatus, allowedDirtyPaths, ['package-lock.json'])) {
+        await this.#autoPushGeneratedLockfile({ repoRoot, repoCfg, status: postPreflightStatus });
+        postPreflightStatus = await getStatusPorcelain(repoRoot);
+      }
+
+      if (postPreflightStatus && !allowDirty && requireClean && !statusHasOnlyAllowedPaths(postPreflightStatus, allowedDirtyPaths)) {
+        throw new Error(`Repo non pulito dopo i preflight: ${repoRoot}\n${postPreflightStatus}`);
       }
 
       const baselineRef = await baselineForRepo(repoRoot, this.config.baseline || {}, since);
@@ -315,6 +403,7 @@ export class VersionManager {
         const filtered = [];
         for (const c of commits) {
           if (await isAutoBumpCommit(repoRoot, c.hash, c.subject, u.autoBump)) continue;
+          if (await isGeneratedLockfileSyncCommit(repoRoot, c.hash, c.subject)) continue;
           filtered.push(c);
         }
         info.commits = filtered;

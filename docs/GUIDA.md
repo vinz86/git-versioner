@@ -50,7 +50,8 @@ Esempio script nel `package.json` del progetto:
 {
   "scripts": {
     "release:kit": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit",
-    "release:kit:push": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit --push"
+    "release:kit:push": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit --push",
+    "release:kit:safe": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit --push --auto-push-generated-lockfile"
   }
 }
 ```
@@ -476,7 +477,32 @@ Fa replace testuale usando regex
 
 ---
 
-## 10. git
+## 10. preflight
+
+Puoi definire una lista di comandi da eseguire **prima** della generazione versione.
+
+```js
+preflight: {
+  commands: [
+    "npm run check:guardrails",
+    "npm run build"
+  ]
+}
+```
+
+Uso tipico:
+
+* controlli architetturali
+* build
+* smoke test rapidi
+
+Se uno dei comandi fallisce, il processo si interrompe.
+
+I comandi vengono eseguiti nella root del repo configurato (`repo.root`).
+
+---
+
+## 11. git
 
 La sezione `git` controlla commit, merge e push
 
@@ -503,6 +529,22 @@ Se `false`, aggiorna solo i file.
 ### `push`
 
 Se `true`, esegue anche il push
+
+### `autoPushGeneratedLockfile`
+
+Se `true`, quando il repo è sporco **solo** per un `package-lock.json` generato, il tool può creare automaticamente un commit tecnico e fare push del file prima di proseguire.
+
+Condizioni:
+
+* `commit = true`
+* `push = true`
+* il repo deve essere sporco solo per `package-lock.json` e per eventuali path già tollerati dal tool (es. submodule gitlink)
+
+Il commit tecnico usa il messaggio:
+
+* `chore(versioner): sync generated package-lock.json`
+
+Questo commit viene ignorato nel calcolo del bump.
 
 ### `messageFromUnit`
 
