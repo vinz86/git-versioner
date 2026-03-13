@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { exec as execCb } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 
 import { CommitClassifier } from './commitClassifier.mjs';
 import { bumpSemver, parseSemver, maxBumpKind } from './semver.mjs';
@@ -32,8 +31,6 @@ import {
   getDefaultRemote,
 } from './git/git.mjs';
 import { writeChangelog } from '../../changelog/changelog.mjs';
-
-const execAsync = promisify(execCb);
 
 function nowSafeStamp() {
   const d = new Date();
@@ -86,15 +83,28 @@ function statusHasOnlyAllowedAndGeneratedPaths(status, allowedPaths, generatedPa
 }
 
 async function runCommand(command, cwd) {
-  try {
-    const { stdout, stderr } = await execAsync(command, { cwd, maxBuffer: 10 * 1024 * 1024 });
-    return { stdout, stderr };
-  } catch (e) {
-    const stdout = e?.stdout?.toString?.() || '';
-    const stderr = e?.stderr?.toString?.() || '';
-    const details = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
-    throw new Error(`Comando preflight fallito: ${command}${details ? `\n${details}` : ''}`);
-  }
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      stdio: 'inherit',
+      env: process.env,
+    });
+
+    child.on('error', (error) => {
+      reject(new Error(`Comando preflight fallito: ${command}\n${error?.message ?? error}`));
+    });
+
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve({ code, signal });
+        return;
+      }
+
+      const exitInfo = signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`;
+      reject(new Error(`Comando preflight fallito: ${command} (${exitInfo})`));
+    });
+  });
 }
 
 async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allowCreate = true) {
@@ -253,7 +263,9 @@ export class VersionManager {
 
     for (const command of commands) {
       if (!command || !String(command).trim()) continue;
-      await runCommand(String(command), repoRoot);
+      const normalized = String(command).trim();
+      console.log(`[git-versioner] preflight > ${normalized}`);
+      await runCommand(normalized, repoRoot);
     }
   }
 
