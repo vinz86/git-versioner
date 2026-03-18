@@ -2,11 +2,12 @@
 
 Questa guida spiega come usare `git-versioner`, come strutturare il file `version.config.mjs` e come configurarlo per:
 
-* repository singolo
-* monorepo con app + layer
-* progetti multi-repo
-* branch dedicato `versions`
-* propagazione dei commit del branch corrente sui branch target
+- repository singolo
+- monorepo con app + layer
+- progetti multi-repo
+- branch dedicato `versions`
+- propagazione dei commit del branch corrente sui branch target
+- preflight checks e guardrail Git
 
 ---
 
@@ -14,18 +15,19 @@ Questa guida spiega come usare `git-versioner`, come strutturare il file `versio
 
 `git-versioner` è una CLI di versioning basata su Git che:
 
-* analizza i commit successivi a una baseline
-* calcola il bump semver (`patch`, `minor`, `major`)
-* aggiorna file di versione e altri file configurati
-* può creare commit separati per branch
-* può propagare il branch corrente su branch target prima del commit di versione
-* può gestire un branch separato `versions`
+- analizza i commit successivi a una baseline
+- calcola il bump semver (`patch`, `minor`, `major`)
+- aggiorna file di versione e altri file configurati
+- può creare commit separati per branch
+- può propagare il branch corrente su branch target prima del commit di versione
+- può gestire un branch separato `versions`
+- può eseguire controlli preliminari prima del versioning
 
 Il tool è pensato per:
 
-* monorepo con più layer
-* repository separati ma coordinati
-* flussi con `main`, `current_version`, `versions`
+- monorepo con più layer
+- repository separati ma coordinati
+- flussi con `main`, `current_version`, `versions`
 
 ---
 
@@ -36,12 +38,12 @@ La configurazione **non dovrebbe stare nel repository del tool**.
 La struttura consigliata è:
 
 ```txt
-|progetto/
-|--|tools/
-|--|--|git-versioner/
-|--|version.config.mjs # config del progetto
-|--|package.json
-|--|layers/
+progetto/
+├─ tools/
+│  └─ git-versioner/
+├─ version.config.mjs
+├─ package.json
+└─ layers/
 ```
 
 Esempio script nel `package.json` del progetto:
@@ -51,10 +53,24 @@ Esempio script nel `package.json` del progetto:
   "scripts": {
     "release:kit": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit",
     "release:kit:push": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit --push",
-    "release:kit:safe": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit --push --auto-push-generated-lockfile"
+    "release:kit:dry": "node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --dry-run --explain"
   }
 }
 ```
+
+---
+
+## Flusso consigliato
+
+Ordine consigliato:
+
+1. working tree pulito
+2. branch corretto e sincronizzato
+3. esecuzione dei preflight
+4. `--dry-run --explain`
+5. esecuzione reale con `--commit` e, se serve, `--push`
+
+Regola pratica: **merge prima, versioning dopo**.
 
 ---
 
@@ -72,15 +88,15 @@ export default {
 
 Le sezioni principali sono:
 
-* `baseline`: da dove partire per leggere i commit nuovi
-* `rules`: come interpretare i commit e ricavarne il bump
-* `repos`: quali repository e unità gestire
+- `baseline`: da dove partire per leggere i commit nuovi
+- `rules`: come interpretare i commit e ricavarne il bump
+- `repos`: quali repository e unità gestire
 
 ---
 
 ## 1. baseline
 
-La baseline dice al tool da dove iniziare per calcolare i commit “nuovi”
+La baseline dice al tool da dove iniziare per calcolare i commit “nuovi”.
 
 ```js
 baseline: {
@@ -94,32 +110,29 @@ baseline: {
 
 Valori possibili:
 
-* `tag`
-
-    * usa l’ultimo tag semver
-* `file`
-
-    * usa un file con hash commit, ad esempio `.release-base`
-    * se manca o non è valido, può fare fallback sul tag
-* `none`
-
-    * usa tutta la history
-    * sconsigliato su repo grandi (non testato) TODO
+- `tag`
+  - usa l’ultimo tag semver
+- `file`
+  - usa un file con hash commit, ad esempio `.release-base`
+  - se manca o non è valido, può fare fallback sul tag
+- `none`
+  - usa tutta la history
+  - sconsigliato su repo grandi
 
 ### `file`
 
 Usato solo se `strategy = 'file'`.
 
-Di solito contiene il commit base da cui partire
+Di solito contiene il commit base da cui partire.
 
 ### `tagMatch`
 
-Pattern usato per cercare l’ultimo tag compatibile con il semver
+Pattern usato per cercare l’ultimo tag compatibile con il semver.
 
 Esempi validi:
 
-* `1.2.3`
-* `v1.2.3`
+- `1.2.3`
+- `v1.2.3`
 
 ---
 
@@ -133,11 +146,11 @@ preid: 'alpha'
 
 Esempi:
 
-* `alpha`
-* `beta`
-* `rc`
+- `alpha`
+- `beta`
+- `rc`
 
-Se non si usa prerelease, si può omettere
+Se non si usa prerelease, si può omettere.
 
 ---
 
@@ -158,10 +171,10 @@ rules: {
 
 Supporta commit con prefissi tipo:
 
-* `[FIX]`
-* `[FEAT]`
-* `[PATCH]`
-* `[BREAKING]`
+- `[FIX]`
+- `[FEAT]`
+- `[PATCH]`
+- `[BREAKING]`
 
 Esempio:
 
@@ -183,9 +196,9 @@ Supporta Conventional Commits.
 
 Esempi:
 
-* `fix(api): ...`
-* `feat(ui): ...`
-* `feat!: ...`
+- `fix(api): ...`
+- `feat(ui): ...`
+- `feat!: ...`
 
 Esempio config:
 
@@ -214,20 +227,21 @@ breaking: { enabled: true }
 allowUnprefixed: false
 ```
 
-* `false`: i commit senza prefisso riconosciuto non contano
-* `true`: il tool può considerarli secondo la sua logica
+- `false`: i commit senza prefisso riconosciuto non contano
+- `true`: il tool può considerarli secondo la sua logica
 
 ---
 
 ## 4. repos
 
-La sezione `repos` contiene i repository da gestire
+La sezione `repos` contiene i repository da gestire.
 
 ```js
 repos: [
   {
     id: 'monorepo',
     root: '.',
+    preflight: { ... },
     units: [ ... ],
     git: { ... }
   }
@@ -236,29 +250,65 @@ repos: [
 
 ### `id`
 
-Nome del repository nella configurazione
+Nome del repository nella configurazione.
 
 ### `root`
 
-Path del repository Git
+Path del repository Git.
 
 Può essere:
 
-* `.` per il repo corrente
-* `../layer-external-repo` per un repo separato
+- `.` per il repo corrente
+- `../layer-external-repo` per un repo separato
 
 ---
 
-## 5. units
+## 5. preflight
+
+Ogni repo può definire comandi preliminari da eseguire prima del versioning.
+
+```js
+preflight: {
+  commands: [
+    'npm run check:guardrails',
+    'npm run build'
+  ]
+}
+```
+
+Comportamento:
+
+- i comandi vengono eseguiti nella `root` del repo
+- l’output è **verbose** e in chiaro su terminale
+- se un comando fallisce, il processo si interrompe
+- sono utili per build, guardrail, smoke check e validazioni locali
+
+### Quando usarli
+
+Buoni candidati:
+
+- `npm run check:all`
+- `npm run build`
+- `npm run lint`
+- `npm run test`
+
+Meno ideali:
+
+- comandi che modificano il repo in modo non controllato
+- comandi che dipendono da rete o ambiente instabile
+
+---
+
+## 6. units
 
 Ogni repo contiene una o più `units`.
 
 Una unit può essere:
 
-* app
-* layer
-* modulo
-* package versionato
+- app
+- layer
+- modulo
+- package versionato
 
 Esempio:
 
@@ -290,8 +340,8 @@ Nome descrittivo.
 
 Valore libero ma consigliati:
 
-* `app`
-* `layer`
+- `app`
+- `layer`
 
 #### `pathFilter`
 
@@ -309,17 +359,17 @@ significa tutto il repo.
 pathFilter: ['layers/layer-core']
 ```
 
-significa solo i commit che toccano quel layer
+significa solo i commit che toccano quel layer.
 
 #### `noMerges`
 
-Se `true`, i merge commit non vengono considerati per quella unit
+Se `true`, i merge commit non vengono considerati per quella unit.
 
 ---
 
-## 6. version
+## 7. version
 
-Definisce il file “source of truth” della versione.
+La sezione `version` dice dove leggere e scrivere la versione principale della unit.
 
 ```js
 version: {
@@ -328,183 +378,81 @@ version: {
 }
 ```
 
-Per file che possono non esistere ancora:
+### `file`
 
-```js
-version: {
-  file: 'layers/layer-core/version.json',
-  field: 'version',
-  createIfMissing: true,
-  default: '0.0.0',
-  initial: {
-    name: 'layer-core',
-    version: '0.0.0',
-    date: '{{stamp}}'
-  }
-}
-```
+File da cui leggere e scrivere la versione.
 
-### Opzioni
+### `field`
 
-* `file`: file JSON da leggere/scrivere
-* `field`: campo della versione
-* `createIfMissing`: crea il file se manca
-* `default`: versione iniziale
-* `initial`: struttura iniziale del file
+Campo JSON che contiene la versione.
+
+Di solito `version`.
 
 ---
 
-## 7. bumpFrom
+## 8. write
 
-Permette all’app principale di ereditare il bump massimo da altre parti (es layer)
-
-```js
-bumpFrom: ['layer-core', 'layer-ui']
-```
+La sezione `write` permette di aggiornare altri file oltre alla versione principale.
 
 Esempio:
 
-* `layer-core` -> `minor`
-* `layer-ui` -> `patch`
-* `app` eredita almeno `minor`
-
-### Rimappare il bump ereditato
-
-Per attenuare il bump ereditato:
-
 ```js
-bumpFromMajor: 'minor',
-bumpFromMinor: 'patch'
-```
-
-Significa:
-
-* una `major` di un layer fa solo `minor` sull’app
-* una `minor` di un layer fa solo `patch` sull’app
-
-Valori ammessi:
-
-* `major`
-* `minor`
-* `patch`
-
-Se omessi, il bump mantiene la severity originale.
-
----
-
-## 8. autoBump
-
-Serve a ignorare commit già generati dal tool di versioning.
-
-```js
-autoBump: {
-  enabled: true,
-  subjectRe: '\\bVersione?\\b\\s*\\d+\\.\\d+\\.\\d+',
-  versionFiles: [
-    'package.json',
-    'version.json',
-    '.release-base',
-    'CHANGELOG.md',
-    'README.md'
-  ]
-}
-```
-
-### `subjectRe`
-
-Regex per riconoscere i commit di versione
-
-### `versionFiles`
-
-Lista di file normalmente toccati dal release/versioner
-
----
-
-## 9. write
-
-Le azioni `write` indicano quali file aggiornare.
-
-Tipi principali:
-
-* `json-set`
-* `readme-marker`
-* `text-replace`
-
-### 9.1 json-set
-
-Aggiorna campi JSON.
-
-```js
-{
-  type: 'json-set',
-  file: 'package.json',
-  set: {
-    version: '{{version}}'
+write: [
+  {
+    type: 'jsonSet',
+    file: 'version.json',
+    path: 'version',
+    template: '{{version}}'
+  },
+  {
+    type: 'readmeMarker',
+    file: 'README.md',
+    marker: 'APP_VERSION',
+    template: '{{version}}'
+  },
+  {
+    type: 'textReplace',
+    file: 'src/version.ts',
+    find: /APP_VERSION = '.*?'/,
+    template: "APP_VERSION = '{{version}}'"
   }
-}
+]
 ```
 
-### 9.2 readme-marker
+Tipi comuni:
 
-Aggiorna una sezione delimitata da marker.
+- `jsonSet`
+- `readmeMarker`
+- `textReplace`
 
-```js
-{
-  type: 'readme-marker',
-  file: 'README.md',
-  start: '<!-- APP_VERSION_START -->',
-  end: '<!-- APP_VERSION_END -->',
-  template: '> Versione **{{version}}** del {{stamp}}'
-}
-```
+Template supportati in generale:
 
-### 9.3 text-replace
-
-Fa replace testuale usando regex
-
-```js
-{
-  type: 'text-replace',
-  file: 'nuxt.config.ts',
-  replace: [
-    {
-      pattern: "appVersion\\s*:\\s*['\"][^'\"]+['\"]",
-      with: "appVersion: '{{version}}'"
-    }
-  ]
-}
-```
+- `{{version}}`
+- `{{prevVersion}}`
+- `{{name}}`
+- `{{id}}`
+- `{{type}}`
+- `{{branch}}`
+- `{{stamp}}`
 
 ---
 
-## 10. preflight
+## 9. changelog
 
-Puoi definire una lista di comandi da eseguire **prima** della generazione versione.
+Se usi il modulo changelog, puoi generare o aggiornare un file di changelog per la unit.
 
-```js
-preflight: {
-  commands: [
-    "npm run check:guardrails",
-    "npm run build"
-  ]
-}
-```
+La configurazione precisa dipende dal progetto, ma in generale il changelog viene costruito dai commit classificati nella finestra di versione.
 
-Uso tipico:
+Consiglio pratico:
 
-* controlli architetturali
-* build
-* smoke test rapidi
-
-Se uno dei comandi fallisce, il processo si interrompe.
-
-I comandi vengono eseguiti nella root del repo configurato (`repo.root`).
+- tieni il changelog come side effect della release
+- non modificare a mano il blocco generato dal tool
 
 ---
 
-## 11. git
+## 10. git
 
-La sezione `git` controlla commit, merge e push
+La sezione `git` controlla commit, merge, push e guardrail.
 
 ```js
 git: {
@@ -512,7 +460,11 @@ git: {
   commit: true,
   push: true,
   messageFromUnit: 'app',
-  message: 'Versione {{version}} del {{stamp}} - {{branch}}'
+  message: 'Versione {{version}} del {{stamp}} - {{branch}}',
+  autoPushGeneratedLockfile: false,
+  allowedBranches: ['main', 'release/*'],
+  blockedBranches: ['feature/*'],
+  requireSyncedWithUpstream: false,
 }
 ```
 
@@ -522,389 +474,254 @@ Se `true`, il repo deve essere pulito prima di partire.
 
 ### `commit`
 
-Se `true`, crea commit
+Se `true`, crea commit.
 
 Se `false`, aggiorna solo i file.
 
 ### `push`
 
-Se `true`, esegue anche il push
-
-### `autoPushGeneratedLockfile`
-
-Se `true`, quando il repo è sporco **solo** per un `package-lock.json` generato, il tool può creare automaticamente un commit tecnico e fare push del file prima di proseguire.
-
-Condizioni:
-
-* `commit = true`
-* `push = true`
-* il repo deve essere sporco solo per `package-lock.json` e per eventuali path già tollerati dal tool (es. submodule gitlink)
-
-Il commit tecnico usa il messaggio:
-
-* `chore(versioner): sync generated package-lock.json`
-
-Questo commit viene ignorato nel calcolo del bump.
+Se `true`, esegue anche il push.
 
 ### `messageFromUnit`
 
 Unit da cui prendere i valori principali usati nel commit message.
 
-Di solito l’app principale
+Di solito l’app principale.
 
 ### `message`
 
-Messaggio commit di default
+Messaggio commit di default.
 
 Template supportati:
 
-* `{{version}}`
-* `{{prevVersion}}`
-* `{{stamp}}`
-* `{{branch}}`
-* `{{repo}}`
-* `{{unit}}`
-* `{{name}}`
-* `{{bump}}`
+- `{{version}}`
+- `{{prevVersion}}`
+- `{{branch}}`
+- `{{stamp}}`
+- `{{name}}`
 
----
+### `allowedBranches`
 
-## 11. commitPerBranch
-
-```js
-commitPerBranch: true
-```
-
-### Se `false`
-
-Un commit unico viene pushato su più branch
-
-### Se `true`
-
-Ogni branch riceve il suo commit dedicato
-
-È utile per messaggi diversi su:
-
-* `main`
-* `current_version`
-* `versions`
-* branch corrente
-
----
-
-## 12. commitPerBranchMode
-
-```js
-commitPerBranchMode: 'apply'
-```
-
-Valori:
-
-* `apply`
-* `cherry-pick`
-
-### `apply` (consigliato)
-
-Flusso:
-
-1. checkout del branch target
-2. merge opzionale del branch sorgente
-3. scrittura file versione
-4. commit con messaggio del branch target
-5. push del branch target
-
-Nota: se lanci il tool con `--no-commit --no-push`, in modalita' `apply` le modifiche vengono scritte solo sul branch/worktree corrente del repo, senza fare checkout degli altri branch.
-
-### `cherry-pick`
-
-Più fragile in caso di conflitti (da testare TODO)
-
----
-
-## 13. mergeCurrentBranchIntoTargets
-
-```js
-mergeCurrentBranchIntoTargets: true
-```
-
-Se `true`, prima del commit di versione su ciascun branch target, il tool prova a mergiare il branch corrente
-
-* per propagare i commit funzionali del branch corrente e poi aggiungere anche il commit di versione
-
-Se `false`, sui target va solo il commit di versione
-
----
-
-## 14. includeCurrentBranch
-
-```js
-includeCurrentBranch: true
-```
-
-Se `true`, il branch da cui lanci il tool viene incluso tra i branch da processare.
-
-Se `false`, vengono processati solo i branch esplicitamente dichiarati e l’eventuale `versionsBranch`
-
----
-
-## 15. currentBranchMessage
-
-Messaggio commit per il branch corrente.
-
-```js
-currentBranchMessage: 'Versione {{version}} del {{stamp}} - {{branch}}'
-```
-
-Se manca, viene usato `message` o il default del tool
-
----
-
-## 16. branches
-
-Lista dei branch target normali.
-
-```js
-branches: [
-  {
-    name: 'main',
-    remote: 'origin',
-    message: 'Versione {{version}} del {{stamp}} - main'
-  },
-  {
-    name: 'current_version',
-    remote: 'origin',
-    message: 'Versione {{version}} del {{stamp}} - current_version'
-  }
-]
-```
-
-Ogni branch può avere:
-
-* `name`
-* `remote`
-* `message`
-
----
-
-## 17. versionsBranch
-
-Branch separato dedicato a snapshot/version tracking.
-
-```js
-versionsBranch: 'versions'
-```
-
-Ha una logica diversa rispetto ai branch normali.
-
-Può:
-
-* avere messaggio dedicato
-* non mergiare il branch corrente
-* essere pushato con policy specifiche
-
-### `versionsBranchMessage`
-
-```js
-versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions'
-```
-
-### `mergeCurrentBranchIntoVersionsBranch`
-
-```js
-mergeCurrentBranchIntoVersionsBranch: false
-```
-
-* `true`: anche `versions` prova a mergiare il branch corrente
-* `false`: `versions` riceve solo il commit di versione dedicato
-
-Meglio `false` così il branch `versions` resta lineare
-
-### `versionsBranchForce`
-
-Opzionale e un pò rischioso Può essere utile per forzare il push di `versions`.
+Lista di pattern consentiti per il branch corrente.
 
 Esempio:
 
 ```js
-versionsBranchForce: 'force-with-lease'
+allowedBranches: ['main', 'current_version', 'release/*']
 ```
+
+### `blockedBranches`
+
+Lista di pattern vietati.
+
+Esempio:
+
+```js
+blockedBranches: ['feature/*']
+```
+
+### `requireSyncedWithUpstream`
+
+Se `true`, il tool si blocca se il branch corrente non è allineato con il suo upstream locale.
+
+Casi che bloccano:
+
+- branch ahead
+- branch behind
+- branch divergente
+
+### `autoPushGeneratedLockfile`
+
+Serve per gestire il caso in cui un preflight generi `package-lock.json` e il tool si fermerebbe perché il repo non è più pulito.
+
+```js
+git: {
+  commit: true,
+  push: true,
+  autoPushGeneratedLockfile: true,
+}
+```
+
+Comportamento:
+
+- entra in gioco solo se `commit=true` e `push=true`
+- si attiva solo se il working tree sporco contiene esclusivamente file generati tollerati
+- attualmente il caso previsto è `package-lock.json`
+- crea un commit tecnico
+- fa push del branch corrente
+- poi prosegue con il versioning
+
+Commit tecnico usato:
+
+```txt
+chore(versioner): sync generated package-lock.json
+```
+
+Quel commit tecnico viene ignorato nel calcolo del bump.
 
 ---
 
-## 18. Esempio: monorepo app + layer
+## 11. Dry-run ed explain
+
+### Dry-run
+
+```bash
+node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --dry-run
+```
+
+Il dry-run non modifica file e non crea commit, ma mostra il piano di esecuzione.
+
+### Explain
+
+```bash
+node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --dry-run --explain
+```
+
+Con `--explain` il tool stampa informazioni diagnostiche aggiuntive, ad esempio:
+
+- branch corrente
+- baseline usata
+- stato upstream
+- unit da bumpare
+- commit considerati
+- motivazioni del bump
+
+È la modalità consigliata prima di una release reale.
+
+---
+
+## 12. Esempio completo di repo
 
 ```js
 export default {
   baseline: {
     strategy: 'file',
     file: '.release-base',
-    tagMatch: '*[0-9]*.[0-9]*.[0-9]*'
+    tagMatch: '*[0-9]*.[0-9]*.[0-9]*',
   },
-
   rules: {
     bracket: {
       enabled: true,
       map: {
         FIX: 'patch',
         FEAT: 'minor',
-        BREAKING: 'major'
-      }
+        BREAKING: 'major',
+      },
     },
     conventional: {
       enabled: true,
       map: {
         fix: 'patch',
-        feat: 'minor'
-      }
+        feat: 'minor',
+        refactor: 'patch',
+      },
     },
     breaking: { enabled: true },
-    allowUnprefixed: false
+    allowUnprefixed: false,
   },
-
   repos: [
     {
-      id: 'monorepo',
+      id: 'app',
       root: '.',
+      preflight: {
+        commands: ['npm run check:all'],
+      },
+      git: {
+        requireClean: true,
+        commit: true,
+        push: true,
+        requireSyncedWithUpstream: true,
+        allowedBranches: ['main', 'current_version'],
+        blockedBranches: ['feature/*'],
+        autoPushGeneratedLockfile: true,
+        messageFromUnit: 'app',
+        message: 'Versione {{version}} del {{stamp}} - {{branch}}',
+      },
       units: [
         {
           id: 'app',
-          name: 'my-app',
+          name: 'Bibrid',
           type: 'app',
           pathFilter: [],
-          version: { file: 'package.json', field: 'version' },
-          bumpFrom: ['layer-core', 'layer-ui'],
-          bumpFromMajor: 'minor',
-          bumpFromMinor: 'patch',
-          write: [
-            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } }
-          ]
-        },
-        {
-          id: 'layer-core',
-          name: 'layer-core',
-          type: 'layer',
-          pathFilter: ['layers/layer-core'],
           version: {
-            file: 'layers/layer-core/version.json',
+            file: 'package.json',
             field: 'version',
-            createIfMissing: true,
-            default: '0.0.0',
-            initial: { name: 'layer-core', version: '0.0.0', date: '{{stamp}}' }
           },
           write: [
             {
-              type: 'json-set',
-              file: 'layers/layer-core/version.json',
-              createIfMissing: true,
-              initial: { name: 'layer-core', version: '0.0.0', date: '{{stamp}}' },
-              set: { name: 'layer-core', version: '{{version}}', date: '{{stamp}}' }
-            }
-          ]
-        }
+              type: 'jsonSet',
+              file: 'version.json',
+              path: 'version',
+              template: '{{version}}',
+            },
+            {
+              type: 'readmeMarker',
+              file: 'README.md',
+              marker: 'APP_VERSION',
+              template: '{{version}}',
+            },
+          ],
+        },
       ],
-      git: {
-        requireClean: true,
-        commit: true,
-        push: true,
-        messageFromUnit: 'app',
-        commitPerBranch: true,
-        commitPerBranchMode: 'apply',
-        mergeCurrentBranchIntoTargets: true,
-        includeCurrentBranch: true,
-        currentBranchMessage: 'Versione {{version}} del {{stamp}} - {{branch}}',
-        branches: [
-          { name: 'main', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - main' },
-          { name: 'current_version', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - current_version' }
-        ],
-        versionsBranch: 'versions',
-        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions',
-        mergeCurrentBranchIntoVersionsBranch: false
-      }
-    }
-  ]
+    },
+  ],
 }
 ```
 
 ---
 
-## 19. Esempio: repo separato
+## 13. Troubleshooting
 
-```js
-export default {
-  baseline: {
-    strategy: 'file',
-    file: '.release-base',
-    tagMatch: '*[0-9]*.[0-9]*.[0-9]*'
-  },
-  rules: {
-    bracket: {
-      enabled: true,
-      map: {
-        FIX: 'patch',
-        FEAT: 'minor',
-        BREAKING: 'major'
-      }
-    },
-    conventional: {
-      enabled: true,
-      map: {
-        fix: 'patch',
-        feat: 'minor'
-      }
-    },
-    breaking: { enabled: true },
-    allowUnprefixed: false
-  },
-  repos: [
-    {
-      id: 'layer-external',
-      root: '../layer-external-repo',
-      units: [
-        {
-          id: 'layer-external',
-          name: 'layer-external',
-          type: 'layer',
-          pathFilter: [],
-          version: { file: 'package.json', field: 'version' },
-          write: [
-            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } }
-          ]
-        }
-      ],
-      git: {
-        requireClean: true,
-        commit: true,
-        push: true,
-        commitPerBranch: false,
-        messageFromUnit: 'layer-external',
-        message: 'Versione {{version}} del {{stamp}} - {{branch}}',
-        branches: [
-          { name: 'main', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - main' }
-        ]
-      }
-    }
-  ]
-}
-```
+### Il repo è sporco dopo i preflight
 
-## 21. Comando
+Possibili cause:
+
+- un preflight ha generato `package-lock.json`
+- un comando ha scritto file non attesi
+- il repo non era pulito in partenza
+
+Contromisure:
+
+- usa `autoPushGeneratedLockfile` solo se vuoi accettare il caso `package-lock.json`
+- lascia i preflight il più possibile non distruttivi
+- rilancia con `--dry-run --explain`
+
+### Il branch non è ammesso
+
+Controlla:
+
+- `allowedBranches`
+- `blockedBranches`
+- branch corrente reale
+
+### Il branch non è sincronizzato
+
+Se `requireSyncedWithUpstream=true`, fai prima:
 
 ```bash
-node tools/git-versioner/bin/versioner.mjs --config ./version.config.mjs --commit --push
+git fetch --all --prune
+git status -sb
 ```
 
----
+poi riallinea il branch.
 
-## 22. Checklist finale
+### Il bump non è quello atteso
 
-Prima di usare il tool verifica:
+Controlla:
 
-* repo pulito
-* config nel progetto corretto
-* branch target esistenti
-* `versionsBranch` configurato correttamente
-* `messageFromUnit` punta alla unit giusta
-* `pathFilter` coerenti
-* `version.file` e `write.file` esistenti o con `createIfMissing`
+- `rules.bracket`
+- `rules.conventional`
+- presenza di breaking change
+- commit tecnici che non dovrebbero contare
+- output di `--explain`
 
 ---
+
+## 14. Raccomandazioni pratiche
+
+- usa sempre `--dry-run --explain` prima di una release importante
+- evita di fare versioning su branch effimeri o feature branch
+- evita cherry-pick arbitrari del commit di release
+- preferisci merge prima e versioning dopo
+- tieni i preflight veloci, affidabili e ripetibili
+- tratta il lockfile tecnico come eccezione controllata, non come norma
