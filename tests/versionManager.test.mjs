@@ -338,3 +338,205 @@ test('linked submodule current branch propagates to parent current branch with d
     await rm(parentDir, { recursive: true, force: true })
   }
 })
+
+test('creates configured annotated tag on versions branch head', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-tags-'))
+  try {
+    await git(dir, ['init'])
+    await git(dir, ['config', 'user.email', 'test@example.invalid'])
+    await git(dir, ['config', 'user.name', 'Test User'])
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2) + '\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-m', 'chore: initial'])
+    await git(dir, ['branch', 'versions'])
+
+    await writeFile(path.join(dir, 'fix.txt'), 'x\n')
+    await git(dir, ['add', 'fix.txt'])
+    await git(dir, ['commit', '-m', 'fix: change'])
+
+    const manager = new VersionManager({
+      baseline: { strategy: 'none' },
+      rules: {
+        bracket: { enabled: true, map: {} },
+        conventional: { enabled: true, map: { fix: 'patch' } },
+        breaking: { enabled: true },
+        allowUnprefixed: false,
+      },
+      repos: [{
+        id: 'demo-repo',
+        root: dir,
+        units: [{
+          id: 'app',
+          name: 'demo',
+          type: 'app',
+          pathFilter: [],
+          version: { file: 'package.json', field: 'version' },
+          write: [
+            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
+            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+          ],
+        }],
+        git: {
+          requireClean: true,
+          commit: true,
+          push: false,
+          messageFromUnit: 'app',
+          message: 'Versione {{version}} - {{branch}}',
+          commitPerBranch: true,
+          commitPerBranchMode: 'apply',
+          branches: [],
+          versionsBranch: 'versions',
+          versionsBranchMessage: 'Versione {{version}} - versions',
+          mergeCurrentBranchIntoVersionsBranch: true,
+          tag: {
+            enabled: true,
+            targets: 'versions',
+            name: 'demo-v{{version}}',
+            message: 'Demo {{version}} {{branch}}',
+          },
+        },
+      }],
+    })
+
+    const result = await manager.run({ commit: true, push: false })
+
+    assert.deepEqual(result.results[0].git.tags.map((tag) => tag.name), ['demo-v1.0.1'])
+    const { stdout: tagTarget } = await git(dir, ['rev-list', '-n', '1', 'demo-v1.0.1'])
+    const { stdout: versionsHead } = await git(dir, ['rev-parse', 'versions'])
+    assert.equal(tagTarget.trim(), versionsHead.trim())
+    const { stdout: tagMessage } = await git(dir, ['tag', '-n99', 'demo-v1.0.1'])
+    assert.match(tagMessage, /Demo 1\.0\.1 versions/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('rejects duplicate tag names across multiple tag targets', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-tags-'))
+  try {
+    await git(dir, ['init'])
+    await git(dir, ['config', 'user.email', 'test@example.invalid'])
+    await git(dir, ['config', 'user.name', 'Test User'])
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2) + '\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-m', 'chore: initial'])
+    await git(dir, ['branch', 'versions'])
+
+    await writeFile(path.join(dir, 'fix.txt'), 'x\n')
+    await git(dir, ['add', 'fix.txt'])
+    await git(dir, ['commit', '-m', 'fix: change'])
+
+    const manager = new VersionManager({
+      baseline: { strategy: 'none' },
+      rules: {
+        bracket: { enabled: true, map: {} },
+        conventional: { enabled: true, map: { fix: 'patch' } },
+        breaking: { enabled: true },
+        allowUnprefixed: false,
+      },
+      repos: [{
+        id: 'demo-repo',
+        root: dir,
+        units: [{
+          id: 'app',
+          name: 'demo',
+          type: 'app',
+          pathFilter: [],
+          version: { file: 'package.json', field: 'version' },
+          write: [
+            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
+            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+          ],
+        }],
+        git: {
+          requireClean: true,
+          commit: true,
+          push: false,
+          messageFromUnit: 'app',
+          message: 'Versione {{version}} - {{branch}}',
+          commitPerBranch: true,
+          commitPerBranchMode: 'apply',
+          branches: [],
+          versionsBranch: 'versions',
+          versionsBranchMessage: 'Versione {{version}} - versions',
+          mergeCurrentBranchIntoVersionsBranch: true,
+          tag: {
+            enabled: true,
+            targets: 'all',
+            name: 'demo-v{{version}}',
+          },
+        },
+      }],
+    })
+
+    await assert.rejects(
+      () => manager.run({ commit: true, push: false }),
+      /Nome tag duplicato "demo-v1\.0\.1"/
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('allows one tag name for multiple targets when they point to the same commit', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-tags-'))
+  try {
+    await git(dir, ['init'])
+    await git(dir, ['config', 'user.email', 'test@example.invalid'])
+    await git(dir, ['config', 'user.name', 'Test User'])
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2) + '\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-m', 'chore: initial'])
+    await git(dir, ['branch', 'stable'])
+
+    await writeFile(path.join(dir, 'fix.txt'), 'x\n')
+    await git(dir, ['add', 'fix.txt'])
+    await git(dir, ['commit', '-m', 'fix: change'])
+
+    const manager = new VersionManager({
+      baseline: { strategy: 'none' },
+      rules: {
+        bracket: { enabled: true, map: {} },
+        conventional: { enabled: true, map: { fix: 'patch' } },
+        breaking: { enabled: true },
+        allowUnprefixed: false,
+      },
+      repos: [{
+        id: 'demo-repo',
+        root: dir,
+        units: [{
+          id: 'app',
+          name: 'demo',
+          type: 'app',
+          pathFilter: [],
+          version: { file: 'package.json', field: 'version' },
+          write: [{ type: 'json-set', file: 'package.json', set: { version: '{{version}}' } }],
+        }],
+        git: {
+          requireClean: true,
+          commit: true,
+          push: false,
+          messageFromUnit: 'app',
+          message: 'Versione {{version}} - {{branch}}',
+          commitPerBranch: false,
+          branches: [{ name: 'stable' }],
+          tag: {
+            enabled: true,
+            targets: 'all',
+            name: 'demo-v{{version}}',
+          },
+        },
+      }],
+    })
+
+    const result = await manager.run({ commit: true, push: false })
+
+    assert.deepEqual(result.results[0].git.tags.map((tag) => tag.name), ['demo-v1.0.1'])
+    const { stdout: tags } = await git(dir, ['tag', '--list', 'demo-v1.0.1'])
+    assert.equal(tags.trim(), 'demo-v1.0.1')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

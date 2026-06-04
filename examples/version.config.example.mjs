@@ -165,6 +165,15 @@ export default {
 
         versionsBranch: 'versions',
         versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions',
+
+        tag: {
+          enabled: true,
+          targets: 'versions',
+          name: 'bibrid-v{{version}}',
+          message: 'Versione {{version}} del {{stamp}} - bibrid',
+          annotated: true,
+          push: true,
+        },
       },
     },
 
@@ -239,6 +248,15 @@ export default {
 
         versionsBranch: 'versions',
         versionsBranchMessage: 'Versione {{version}} del {{stamp}} - ui-kit:versions',
+
+        tag: {
+          enabled: true,
+          targets: 'versions',
+          name: 'ui-kit-v{{version}}',
+          message: 'Versione {{version}} del {{stamp}} - ui-kit',
+          annotated: true,
+          push: true,
+        },
 
         linkedSubmoduleInParent: {
           mode: 'propagate',
