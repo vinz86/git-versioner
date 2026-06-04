@@ -607,7 +607,7 @@ export class VersionManager {
 
     const varsBase = { repo: repoCfg.id || '', version: versionForMessage, stamp };
 
-    if (!branches.length) {
+    if (!branches.length && !(commitPerBranch && applyPerBranchMode && gitCfg.versionsBranch)) {
       const curBranch = await getCurrentBranch(repoRoot);
 
       if (writeOnlyApplyMode) {
@@ -630,6 +630,10 @@ export class VersionManager {
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
+      if (applyPerBranchMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+      }
       await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
 
       await addAll(repoRoot);
