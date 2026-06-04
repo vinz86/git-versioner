@@ -22,7 +22,7 @@ export async function isWorkTree(cwd) {
 
 export async function getStatusPorcelain(cwd) {
   const out = await git(['status', '--porcelain'], { cwd, allowFail: true });
-  return (out ?? '').trim();
+  return (out ?? '').trimEnd();
 }
 
 export async function getCurrentBranch(cwd) {
@@ -145,5 +145,10 @@ export async function logCommits(cwd, { range, paths = [], noMerges = false } = 
 
 export async function diffNameOnly(cwd, commitHash) {
   const out = await git(['diff-tree', '--no-commit-id', '--name-only', '-r', commitHash], { cwd, allowFail: true });
+  return (out ?? '').split('\n').map(s => s.trim()).filter(Boolean);
+}
+
+export async function getUnmergedPaths(cwd) {
+  const out = await git(['diff', '--name-only', '--diff-filter=U'], { cwd, allowFail: true });
   return (out ?? '').split('\n').map(s => s.trim()).filter(Boolean);
 }

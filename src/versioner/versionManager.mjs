@@ -29,6 +29,7 @@ import {
   push,
   pushHeadToBranch,
   getDefaultRemote,
+  getUnmergedPaths,
 } from './git/git.mjs';
 import { writeChangelog } from '../../changelog/changelog.mjs';
 
@@ -80,6 +81,17 @@ function getMatchingPaths(status, allowedPaths) {
 function statusHasOnlyAllowedAndGeneratedPaths(status, allowedPaths, generatedPaths) {
   const combined = [...(allowedPaths || []), ...(generatedPaths || [])];
   return statusHasOnlyAllowedPaths(status, combined);
+}
+
+function addPendingSubmoduleUpdate(pending, branchName, submodulePath, sha) {
+  if (!branchName || !submodulePath || !sha) return;
+  if (!pending[branchName]) pending[branchName] = [];
+  const existing = pending[branchName].find((upd) => upd.submodulePath === submodulePath);
+  if (existing) {
+    existing.sha = sha;
+    return;
+  }
+  pending[branchName].push({ submodulePath, sha });
 }
 
 async function runCommand(command, cwd) {
@@ -248,6 +260,22 @@ async function applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, 
   const abs = path.join(repoRoot, releaseBaseFile);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
+}
+
+async function resolveGeneratedMergeConflicts(repoRoot, { releaseBaseFile, releaseBaseHash, dryRun }) {
+  const unmerged = await getUnmergedPaths(repoRoot);
+  if (!unmerged.length) return false;
+
+  const generated = new Set([releaseBaseFile].filter(Boolean));
+  const unsupported = unmerged.filter((file) => !generated.has(file));
+  if (unsupported.length) return false;
+
+  if (releaseBaseFile && unmerged.includes(releaseBaseFile)) {
+    await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+    await addPath(repoRoot, releaseBaseFile);
+  }
+
+  return true;
 }
 
 async function resolveVersionForMessage(repoRoot, repoCfg, unitResults, stamp) {
@@ -444,7 +472,8 @@ export class VersionManager {
         globalUnitBumps.set(u.id, info.bump);
       }
 
-      repoPlans.push({ repoCfg, repoRoot, baselineRef, applyPerBranchMode, requireClean, unitMap });
+      const currentBranch = await getCurrentBranch(repoRoot);
+      repoPlans.push({ repoCfg, repoRoot, baselineRef, applyPerBranchMode, requireClean, unitMap, currentBranch });
     }
 
     for (const plan of repoPlans) {
@@ -545,9 +574,12 @@ export class VersionManager {
       const link = repoCfg?.git?.linkedSubmoduleInParent;
       if (link?.mode === 'propagate' && link.parentRepoId && link.submodulePath && didGit?.committed && didGit?.branchHeads) {
         const parentPending = pendingSubmoduleUpdatesByParent.get(link.parentRepoId) || {};
+        const parentPlan = repoPlans.find((candidate) => candidate.repoCfg?.id === link.parentRepoId);
         for (const [branchName, sha] of Object.entries(didGit.branchHeads)) {
-          if (!parentPending[branchName]) parentPending[branchName] = [];
-          parentPending[branchName].push({ submodulePath: link.submodulePath, sha });
+          addPendingSubmoduleUpdate(parentPending, branchName, link.submodulePath, sha);
+          if (branchName === plan.currentBranch && parentPlan?.currentBranch && parentPlan.currentBranch !== branchName) {
+            addPendingSubmoduleUpdate(parentPending, parentPlan.currentBranch, link.submodulePath, sha);
+          }
         }
         pendingSubmoduleUpdatesByParent.set(link.parentRepoId, parentPending);
       }
@@ -756,7 +788,10 @@ export class VersionManager {
 
           const targetInitialStatus = await getStatusPorcelain(repoRoot);
           if (targetInitialStatus) {
-            throw new Error(`Branch target non pulito prima della release: ${b.name} (${repoRoot})\n${targetInitialStatus}`);
+            const allowedPendingPaths = (pendingSubmoduleUpdates?.[b.name] || []).map((upd) => upd.submodulePath);
+            if (!statusHasOnlyAllowedPaths(targetInitialStatus, allowedPendingPaths)) {
+              throw new Error(`Branch target non pulito prima della release: ${b.name} (${repoRoot})\n${targetInitialStatus}`);
+            }
           }
 
           const isVersionsBranchTarget = Boolean(b.isVersionsBranch) || (gitCfg.versionsBranch && b.name === gitCfg.versionsBranch);
@@ -770,7 +805,14 @@ export class VersionManager {
             try {
               await merge(repoRoot, originalBranch, { noEdit: true, noFF: true, noCommit: true });
             } catch (e) {
-              throw new Error(`Merge fallito di ${originalBranch} su ${b.name}: ${e?.message ?? e}`);
+              const resolved = await resolveGeneratedMergeConflicts(repoRoot, {
+                releaseBaseFile,
+                releaseBaseHash,
+                dryRun,
+              });
+              if (!resolved) {
+                throw new Error(`Merge fallito di ${originalBranch} su ${b.name}: ${e?.message ?? e}`);
+              }
             }
           }
 
