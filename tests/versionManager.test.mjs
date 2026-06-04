@@ -155,3 +155,186 @@ test('commitPerBranch apply mode treats versionsBranch as a target when branches
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('apply mode auto-resolves generated release-base conflicts on versions branch', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-releasebase-'))
+  try {
+    await git(dir, ['init'])
+    await git(dir, ['config', 'user.email', 'test@example.invalid'])
+    await git(dir, ['config', 'user.name', 'Test User'])
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-m', 'chore: initial'])
+    const { stdout: initialSha } = await git(dir, ['rev-parse', 'HEAD'])
+    await git(dir, ['branch', 'versions'])
+
+    await git(dir, ['checkout', 'versions'])
+    await writeFile(path.join(dir, '.release-base'), initialSha.trim() + '\n')
+    await git(dir, ['add', '.release-base'])
+    await git(dir, ['commit', '-m', 'chore: seed versions baseline'])
+
+    await git(dir, ['checkout', '-b', 'dev', initialSha.trim()])
+    await writeFile(path.join(dir, 'fix.txt'), 'x\n')
+    await git(dir, ['add', 'fix.txt'])
+    await git(dir, ['commit', '-m', 'fix: change'])
+    const { stdout: featureSha } = await git(dir, ['rev-parse', 'HEAD'])
+
+    const manager = new VersionManager({
+      baseline: { strategy: 'file', file: '.release-base' },
+      rules: {
+        bracket: { enabled: true, map: {} },
+        conventional: { enabled: true, map: { fix: 'patch' } },
+        breaking: { enabled: true },
+        allowUnprefixed: false,
+      },
+      repos: [{
+        id: 'demo',
+        root: dir,
+        units: [{
+          id: 'app',
+          name: 'demo',
+          type: 'app',
+          pathFilter: [],
+          version: { file: 'package.json', field: 'version' },
+          write: [
+            { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
+            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+          ],
+        }],
+        git: {
+          requireClean: true,
+          commit: true,
+          push: false,
+          messageFromUnit: 'app',
+          message: 'Versione {{version}} - {{branch}}',
+          currentBranchMessage: 'Versione {{version}} - dev',
+          commitPerBranch: true,
+          commitPerBranchMode: 'apply',
+          branches: [],
+          versionsBranch: 'versions',
+          versionsBranchMessage: 'Versione {{version}} - versions',
+          mergeCurrentBranchIntoVersionsBranch: true,
+        },
+      }],
+    })
+
+    await manager.run({ commit: true, push: false })
+
+    const { stdout: versionsBase } = await git(dir, ['show', 'versions:.release-base'])
+    assert.equal(versionsBase.trim(), featureSha.trim())
+    const { stdout: versionsPkg } = await git(dir, ['show', 'versions:package.json'])
+    assert.equal(JSON.parse(versionsPkg).version, '0.0.1')
+    const { stdout: unmerged } = await git(dir, ['diff', '--name-only', '--diff-filter=U'])
+    assert.equal(unmerged, '')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('linked submodule current branch propagates to parent current branch with different names', async () => {
+  const parentDir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-parent-'))
+  const childDir = path.join(parentDir, 'child')
+  try {
+    await git(parentDir, ['init'])
+    await git(parentDir, ['config', 'user.email', 'test@example.invalid'])
+    await git(parentDir, ['config', 'user.name', 'Test User'])
+
+    await git(parentDir, ['init', 'child'])
+    await git(childDir, ['config', 'user.email', 'test@example.invalid'])
+    await git(childDir, ['config', 'user.name', 'Test User'])
+    await writeFile(path.join(childDir, 'package.json'), JSON.stringify({ name: 'child', version: '0.0.0' }, null, 2) + '\n')
+    await git(childDir, ['add', '.'])
+    await git(childDir, ['commit', '-m', 'chore: child initial'])
+    await git(childDir, ['checkout', '-b', 'child-dev'])
+    const { stdout: childInitialSha } = await git(childDir, ['rev-parse', 'HEAD'])
+
+    await writeFile(path.join(parentDir, 'package.json'), JSON.stringify({ name: 'parent', version: '0.0.0' }, null, 2) + '\n')
+    await writeFile(path.join(parentDir, 'README.md'), '# Parent\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await git(parentDir, ['add', 'package.json', 'README.md'])
+    await git(parentDir, ['update-index', '--add', '--cacheinfo', `160000,${childInitialSha.trim()},child`])
+    await git(parentDir, ['commit', '-m', 'chore: parent initial'])
+    await git(parentDir, ['checkout', '-b', 'parent-dev'])
+
+    await writeFile(path.join(childDir, 'fix.txt'), 'x\n')
+    await git(childDir, ['add', 'fix.txt'])
+    await git(childDir, ['commit', '-m', 'fix: child change'])
+
+    const manager = new VersionManager({
+      baseline: { strategy: 'none' },
+      rules: {
+        bracket: { enabled: true, map: {} },
+        conventional: { enabled: true, map: { fix: 'patch' } },
+        breaking: { enabled: true },
+        allowUnprefixed: false,
+      },
+      repos: [
+        {
+          id: 'child-repo',
+          root: childDir,
+          units: [{
+            id: 'child-unit',
+            name: 'child',
+            type: 'layer',
+            pathFilter: [],
+            version: { file: 'package.json', field: 'version' },
+            write: [{ type: 'json-set', file: 'package.json', set: { version: '{{version}}' } }],
+          }],
+          git: {
+            requireClean: true,
+            commit: true,
+            push: false,
+            messageFromUnit: 'child-unit',
+            message: 'Versione {{version}} - child:{{branch}}',
+            commitPerBranch: true,
+            commitPerBranchMode: 'apply',
+            branches: [],
+            linkedSubmoduleInParent: {
+              mode: 'propagate',
+              parentRepoId: 'parent-repo',
+              submodulePath: 'child',
+            },
+          },
+        },
+        {
+          id: 'parent-repo',
+          root: parentDir,
+          units: [{
+            id: 'app',
+            name: 'parent',
+            type: 'app',
+            pathFilter: [],
+            version: { file: 'package.json', field: 'version' },
+            bumpFrom: ['child-unit'],
+            bumpFromMinor: 'patch',
+            write: [
+              { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
+              { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+            ],
+          }],
+          git: {
+            requireClean: true,
+            commit: true,
+            push: false,
+            messageFromUnit: 'app',
+            message: 'Versione {{version}} - parent:{{branch}}',
+            commitPerBranch: true,
+            commitPerBranchMode: 'apply',
+            branches: [],
+          },
+        },
+      ],
+    })
+
+    await manager.run({ commit: true, push: false })
+
+    const { stdout: childHead } = await git(childDir, ['rev-parse', 'HEAD'])
+    const { stdout: parentGitlink } = await git(parentDir, ['rev-parse', 'HEAD:child'])
+    assert.equal(parentGitlink.trim(), childHead.trim())
+
+    const { stdout: subject } = await git(parentDir, ['log', '-1', '--pretty=%s'])
+    assert.equal(subject.trim(), 'Versione 0.0.1 - parent:parent-dev')
+  } finally {
+    await rm(parentDir, { recursive: true, force: true })
+  }
+})
