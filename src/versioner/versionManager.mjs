@@ -250,6 +250,25 @@ async function applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, 
   if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
 }
 
+async function resolveVersionForMessage(repoRoot, repoCfg, unitResults, stamp) {
+  const messageUnitId = repoCfg?.git?.messageFromUnit;
+  const resultVersion = (messageUnitId && unitResults.find((u) => u.unitId === messageUnitId)?.to)
+    || unitResults[0]?.to;
+  if (resultVersion) return resultVersion;
+
+  const unit = (repoCfg?.units || []).find((u) => u.id === messageUnitId)
+    || (repoCfg?.units || []).find((u) => u.type === 'app')
+    || (repoCfg?.units || [])[0];
+  if (!unit?.version?.file) return '0.0.0';
+
+  const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp };
+  try {
+    return await readUnitCurrentVersion(repoRoot, unit, varsForInit, false, false);
+  } catch {
+    return '0.0.0';
+  }
+}
+
 export class VersionManager {
   constructor(config = {}) {
     this.config = config;
@@ -584,9 +603,7 @@ export class VersionManager {
     const branches = gitCfg.branches || [];
     const commitPerBranch = Boolean(gitCfg.commitPerBranch);
 
-    const versionForMessage = (gitCfg.messageFromUnit && unitResults.find((u) => u.unitId === gitCfg.messageFromUnit)?.to)
-        || unitResults[0]?.to
-        || '0.0.0';
+    const versionForMessage = await resolveVersionForMessage(repoRoot, repoCfg, unitResults, stamp);
 
     const varsBase = { repo: repoCfg.id || '', version: versionForMessage, stamp };
 
@@ -614,15 +631,6 @@ export class VersionManager {
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
       await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
-      await this.#applyChangelogIfEnabled({
-        repoRoot,
-        repoCfg,
-        unitResults,
-        unitMap,
-        dryRun,
-        changelog,
-        noChangelog,
-      });
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
@@ -741,6 +749,11 @@ export class VersionManager {
 
         for (const b of targets) {
           await checkout(repoRoot, b.name);
+
+          const targetInitialStatus = await getStatusPorcelain(repoRoot);
+          if (targetInitialStatus) {
+            throw new Error(`Branch target non pulito prima della release: ${b.name} (${repoRoot})\n${targetInitialStatus}`);
+          }
 
           const isVersionsBranchTarget = Boolean(b.isVersionsBranch) || (gitCfg.versionsBranch && b.name === gitCfg.versionsBranch);
           const shouldMergeSourceBranch = (

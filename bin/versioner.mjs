@@ -14,6 +14,7 @@
       dryRun: false,
       preid: null,
       changelog: null,
+      noChangelog: false,
       autoPushGeneratedLockfile: null
     };
 
@@ -24,7 +25,10 @@
       else if (a === '--commit') args.commit = true;
       else if (a === '--no-commit') args.commit = false;
       else if (a === '--changelog') args.changelog = true;
-      else if (a === '--no-changelog') args.changelog = false;
+      else if (a === '--no-changelog') {
+        args.changelog = false;
+        args.noChangelog = true;
+      }
       else if (a === '--push') args.push = true;
       else if (a === '--no-push') args.push = false;
       else if (a === '--allow-dirty') args.allowDirty = true;
@@ -62,6 +66,7 @@
       allowDirty: args.allowDirty,
       dryRun: args.dryRun,
       changelog: args.changelog,
+      noChangelog: args.noChangelog,
       autoPushGeneratedLockfile: args.autoPushGeneratedLockfile,
     });
 
