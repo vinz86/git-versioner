@@ -1,5 +1,9 @@
 # git-versioner
 
+<!-- TOOL_VERSION_START -->
+> Versione **0.1.1**
+<!-- TOOL_VERSION_END -->
+
 CLI di versioning per progetti Git con supporto a:
 
 - repository singolo
