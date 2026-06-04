@@ -126,6 +126,29 @@ export async function pushHeadToBranch(cwd, branchName, remote = null, forceWith
   await git(args, { cwd });
 }
 
+export async function tagExists(cwd, tagName) {
+  const out = await git(['rev-parse', '--verify', `refs/tags/${tagName}`], { cwd, allowFail: true });
+  return Boolean(out?.trim());
+}
+
+export async function createTag(cwd, tagName, ref, { annotated = true, message = null } = {}) {
+  const args = ['tag'];
+  if (annotated) {
+    args.push('-a', tagName);
+    args.push(ref);
+    args.push('-m', message || tagName);
+  } else {
+    args.push(tagName, ref);
+  }
+  await git(args, { cwd });
+}
+
+export async function pushTag(cwd, tagName, remote = null) {
+  const r = remote || (await getDefaultRemote(cwd));
+  if (!r) throw new Error(`Nessun remote configurato in ${cwd}`);
+  await git(['push', r, `refs/tags/${tagName}`], { cwd });
+}
+
 export async function logCommits(cwd, { range, paths = [], noMerges = false } = {}) {
   // Record separator \x1e, field separator \x1f
   const fmt = '%H%x1f%s%x1f%b%x1e';

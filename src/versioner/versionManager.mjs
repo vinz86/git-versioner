@@ -30,6 +30,9 @@ import {
   pushHeadToBranch,
   getDefaultRemote,
   getUnmergedPaths,
+  tagExists,
+  createTag,
+  pushTag,
 } from './git/git.mjs';
 import { writeChangelog } from '../../changelog/changelog.mjs';
 
@@ -92,6 +95,39 @@ function addPendingSubmoduleUpdate(pending, branchName, submodulePath, sha) {
     return;
   }
   pending[branchName].push({ submodulePath, sha });
+}
+
+function normalizeTagConfig(gitCfg) {
+  const cfg = gitCfg?.tag ?? gitCfg?.tags ?? null;
+  if (!cfg) return { enabled: false };
+  if (cfg === true) return { enabled: true };
+  if (cfg === false) return { enabled: false };
+  return {
+    enabled: Boolean(cfg.enabled),
+    name: cfg.name || cfg.template || 'v{{version}}',
+    message: cfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}',
+    annotated: cfg.annotated !== false,
+    targets: cfg.targets || cfg.target || 'current',
+    allowExisting: Boolean(cfg.allowExisting),
+    push: cfg.push,
+    remote: cfg.remote || null,
+  };
+}
+
+function resolveTagTargetBranches(tagCfg, branchHeads, currentBranch, versionsBranch) {
+  const available = Object.keys(branchHeads || {});
+  const requested = tagCfg.targets ?? 'current';
+  const values = Array.isArray(requested) ? requested : [requested];
+  const targets = [];
+
+  for (const value of values) {
+    if (value === 'all') targets.push(...available);
+    else if (value === 'current') targets.push(currentBranch);
+    else if (value === 'versions') targets.push(versionsBranch || 'versions');
+    else targets.push(String(value));
+  }
+
+  return [...new Set(targets)].filter((branch) => branch && branchHeads?.[branch]);
 }
 
 async function runCommand(command, cwd) {
@@ -276,6 +312,72 @@ async function resolveGeneratedMergeConflicts(repoRoot, { releaseBaseFile, relea
   }
 
   return true;
+}
+
+async function applyTagsForBranchHeads(repoRoot, {
+  gitCfg,
+  varsBase,
+  branchHeads,
+  currentBranch,
+  doPush,
+}) {
+  const tagCfg = normalizeTagConfig(gitCfg);
+  if (!tagCfg.enabled) return [];
+
+  const targetBranches = resolveTagTargetBranches(tagCfg, branchHeads, currentBranch, gitCfg?.versionsBranch);
+  if (!targetBranches.length) return [];
+
+  const planned = [];
+  const names = new Map();
+  for (const branch of targetBranches) {
+    const sha = branchHeads[branch];
+    const vars = { ...varsBase, branch, sha };
+    const name = renderTemplate(tagCfg.name, vars).trim();
+    if (!name) throw new Error(`Nome tag vuoto per branch ${branch} (${repoRoot})`);
+
+    const existing = names.get(name);
+    if (existing) {
+      if (existing.sha === sha) continue;
+      throw new Error(`Nome tag duplicato "${name}" per branch ${existing.branch} e ${branch}. Usa {{branch}} nel template o limita tag.targets.`);
+    }
+    names.set(name, { branch, sha });
+
+    planned.push({
+      branch,
+      sha,
+      name,
+      message: renderTemplate(tagCfg.message, vars),
+    });
+  }
+
+  const created = [];
+  for (const item of planned) {
+    if (await tagExists(repoRoot, item.name)) {
+      if (tagCfg.allowExisting) {
+        created.push({ ...item, created: false, existing: true, pushed: false });
+        continue;
+      }
+      throw new Error(`Tag già esistente: ${item.name} (${repoRoot})`);
+    }
+
+    await createTag(repoRoot, item.name, item.sha, {
+      annotated: tagCfg.annotated,
+      message: item.message,
+    });
+
+    let pushed = false;
+    const shouldPushTag = tagCfg.push === null || tagCfg.push === undefined
+      ? doPush
+      : Boolean(tagCfg.push) && doPush;
+    if (shouldPushTag) {
+      await pushTag(repoRoot, item.name, tagCfg.remote || null);
+      pushed = true;
+    }
+
+    created.push({ ...item, created: true, existing: false, pushed });
+  }
+
+  return created;
 }
 
 async function resolveVersionForMessage(repoRoot, repoCfg, unitResults, stamp) {
@@ -679,12 +781,22 @@ export class VersionManager {
         }
       }
 
+      const branchHeads = { [curBranch]: newHead };
+      const tags = await applyTagsForBranchHeads(repoRoot, {
+        gitCfg,
+        varsBase,
+        branchHeads,
+        currentBranch: curBranch,
+        doPush,
+      });
+
       return {
         committed: true,
         pushed: Boolean(doPush),
         mode: 'single-branch-commit',
         branches: [curBranch],
-        branchHeads: { [curBranch]: newHead },
+        branchHeads,
+        tags,
       };
     }
 
@@ -731,7 +843,14 @@ export class VersionManager {
       const branchHeads = { [curBranch]: headSha };
       for (const b of branches) branchHeads[b.name] = headSha;
       if (gitCfg.versionsBranch) branchHeads[gitCfg.versionsBranch] = headSha;
-      return { committed: true, pushed: Boolean(doPush), mode: 'single-commit-multi-push', branchHeads };
+      const tags = await applyTagsForBranchHeads(repoRoot, {
+        gitCfg,
+        varsBase,
+        branchHeads,
+        currentBranch: curBranch,
+        doPush,
+      });
+      return { committed: true, pushed: Boolean(doPush), mode: 'single-commit-multi-push', branchHeads, tags };
     }
 
     if (applyPerBranchMode) {
@@ -853,6 +972,13 @@ export class VersionManager {
         mode: 'commit-per-branch-apply',
         branches: Object.keys(branchHeads),
         branchHeads,
+        tags: await applyTagsForBranchHeads(repoRoot, {
+          gitCfg,
+          varsBase,
+          branchHeads,
+          currentBranch: originalBranch,
+          doPush,
+        }),
       };
     }
 
@@ -870,6 +996,8 @@ export class VersionManager {
 
     const baseSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
+    const branchHeads = {};
+
     try {
       for (const b of branches) {
         await checkout(repoRoot, b.name);
@@ -884,6 +1012,7 @@ export class VersionManager {
         const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
         const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
         await amendMessage(repoRoot, msg);
+        branchHeads[b.name] = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
         if (doPush) {
           const remote = b.remote || (await getDefaultRemote(repoRoot));
@@ -896,6 +1025,18 @@ export class VersionManager {
       await branchDelete(repoRoot, tmpBranch);
     }
 
-    return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-cherry-pick' };
+    return {
+      committed: true,
+      pushed: Boolean(doPush),
+      mode: 'commit-per-branch-cherry-pick',
+      branchHeads,
+      tags: await applyTagsForBranchHeads(repoRoot, {
+        gitCfg,
+        varsBase,
+        branchHeads,
+        currentBranch: originalBranch,
+        doPush,
+      }),
+    };
   }
 }

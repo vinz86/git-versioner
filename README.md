@@ -11,6 +11,7 @@ CLI di versioning per progetti Git con supporto a:
 - multi-repo coordinati
 - app + layers
 - changelog e file di versione multipli
+- tag Git annotati per release
 
 ## Uso rapido
 
@@ -71,6 +72,14 @@ export default {
         autoPushGeneratedLockfile: false,
         commit: true,
         push: true,
+        tag: {
+          enabled: true,
+          targets: 'versions',
+          name: 'app-v{{version}}',
+          message: 'Versione {{version}} del {{stamp}} - app',
+          annotated: true,
+          push: true,
+        },
       },
       units: [
         {

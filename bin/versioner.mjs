@@ -79,6 +79,13 @@
         console.log(`- ${u.unitId}: ${u.from} -> ${u.to} (${u.bump})`);
       }
       console.log(`Git: ${r.git.mode}`);
+      if (r.git?.tags?.length) {
+        for (const tag of r.git.tags) {
+          const state = tag.created ? 'creato' : 'esistente';
+          const pushed = tag.pushed ? ', push' : '';
+          console.log(`Tag: ${tag.name} (${tag.branch}, ${state}${pushed})`);
+        }
+      }
     }
   }
 

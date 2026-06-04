@@ -559,6 +559,43 @@ chore(versioner): sync generated package-lock.json
 
 Quel commit tecnico viene ignorato nel calcolo del bump.
 
+### `tag`
+
+La sezione `tag` crea tag Git locali dopo i commit di release riusciti.
+
+```js
+git: {
+  tag: {
+    enabled: true,
+    targets: 'versions',
+    name: 'app-v{{version}}',
+    message: 'Versione {{version}} del {{stamp}} - app',
+    annotated: true,
+    push: true,
+  },
+}
+```
+
+Campi principali:
+
+- `enabled`: abilita la creazione tag.
+- `targets`: branch da taggare. Valori utili: `current`, `versions`, `all` oppure lista di branch.
+- `name`: template del nome tag.
+- `message`: template del messaggio per tag annotati.
+- `annotated`: se `true`, crea tag annotati; se `false`, tag lightweight.
+- `push`: se `true`, pusha i tag solo quando anche il comando sta pushando. Con `--no-push` non pusha nulla.
+- `allowExisting`: se `true`, non fallisce quando il tag esiste già.
+
+Template disponibili:
+
+- `{{repo}}`
+- `{{version}}`
+- `{{branch}}`
+- `{{stamp}}`
+- `{{sha}}`
+
+Se `targets: 'all'` produce lo stesso nome tag per branch diversi, il tool si blocca. In quel caso usa `{{branch}}` nel nome oppure limita `targets`.
+
 ---
 
 ## 11. Dry-run ed explain
