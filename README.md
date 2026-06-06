@@ -74,7 +74,7 @@ export default {
         push: true,
         tag: {
           enabled: true,
-          targets: 'versions',
+          targets: 'current',
           name: 'app-v{{version}}',
           message: 'Versione {{version}} del {{stamp}} - app',
           annotated: true,
