@@ -702,7 +702,6 @@ export class VersionManager {
         applyPerBranchMode,
         releaseBaseHash: newestRelevantHash,
         releaseBaseFile: (this.config.baseline?.strategy === 'file') ? (this.config.baseline?.file || '.release-base') : null,
-        version: versionForMessage,
         pendingSubmoduleUpdates,
         changelog,
         noChangelog,
