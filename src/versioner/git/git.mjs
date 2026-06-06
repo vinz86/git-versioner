@@ -65,6 +65,13 @@ export async function checkout(cwd, branch) {
   await git(['checkout', branch], { cwd });
 }
 
+export async function checkoutBranch(cwd, branch, remote = null) {
+  const checkedOut = await git(['checkout', branch], { cwd, allowFail: true });
+  if (checkedOut !== null) return;
+  if (!remote) throw new Error(`Branch locale mancante: ${branch}`);
+  await git(['checkout', '-b', branch, '--track', `${remote}/${branch}`], { cwd });
+}
+
 export async function checkoutRef(cwd, ref) {
   await git(['checkout', ref], { cwd });
 }
@@ -106,9 +113,26 @@ export async function merge(cwd, ref, { noEdit = true, noFF = false, noCommit = 
   await git(args, { cwd });
 }
 
+export async function mergeAbort(cwd) {
+  await git(['merge', '--abort'], { cwd, allowFail: true });
+}
+
+export async function fetchBranch(cwd, remote, branch) {
+  await git(['fetch', '--prune', remote, branch], { cwd });
+}
+
+export async function fastForward(cwd, ref) {
+  await git(['merge', '--ff-only', ref], { cwd });
+}
+
+export async function isAncestor(cwd, ancestor, descendant = 'HEAD') {
+  const result = await git(['merge-base', '--is-ancestor', ancestor, descendant], { cwd, allowFail: true });
+  return result !== null;
+}
+
 export async function push(cwd, remote = null, refspec = null, forceWithLease = false) {
   const args = ['push'];
-  if (forceWithLease || (typeof refspec === 'string' && refspec.endsWith(':refs/heads/versions'))) args.push('--force-with-lease');
+  if (forceWithLease) args.push('--force-with-lease');
   if (remote) args.push(remote);
   if (refspec) args.push(refspec);
   await git(args, { cwd });
@@ -121,8 +145,6 @@ export async function pushHeadToBranch(cwd, branchName, remote = null, forceWith
   const args = ['push'];
   if (forceWithLease) args.push('--force-with-lease');
   args.push(r, `HEAD:refs/heads/${branchName}`);
-  if (branchName === 'versions') args.splice(1, 0, '--force-with-lease');
-
   await git(args, { cwd });
 }
 

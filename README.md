@@ -1,7 +1,7 @@
 # git-versioner
 
 <!-- TOOL_VERSION_START -->
-> Versione **0.2.1** del 04/06/2026 22:19
+> Versione **0.2.2** del 06/06/2026 16:56
 <!-- TOOL_VERSION_END -->
 
 CLI di versioning per progetti Git con supporto a:
@@ -74,7 +74,7 @@ export default {
         push: true,
         tag: {
           enabled: true,
-          targets: 'versions',
+          targets: 'current',
           name: 'app-v{{version}}',
           message: 'Versione {{version}} del {{stamp}} - app',
           annotated: true,

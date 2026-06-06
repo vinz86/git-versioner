@@ -5,7 +5,6 @@ Questa guida spiega come usare `git-versioner`, come strutturare il file `versio
 - repository singolo
 - monorepo con app + layer
 - progetti multi-repo
-- branch dedicato `versions`
 - propagazione dei commit del branch corrente sui branch target
 - preflight checks e guardrail Git
 
@@ -20,14 +19,13 @@ Questa guida spiega come usare `git-versioner`, come strutturare il file `versio
 - aggiorna file di versione e altri file configurati
 - può creare commit separati per branch
 - può propagare il branch corrente su branch target prima del commit di versione
-- può gestire un branch separato `versions`
 - può eseguire controlli preliminari prima del versioning
 
 Il tool è pensato per:
 
 - monorepo con più layer
 - repository separati ma coordinati
-- flussi con `main`, `current_version`, `versions`
+- flussi con branch di lavoro, `main` e `current_version`
 
 ---
 
@@ -530,6 +528,20 @@ Casi che bloccano:
 - branch behind
 - branch divergente
 
+### `syncTargetsWithRemote`
+
+In modalità `commitPerBranchMode: 'apply'`, se `push=true`, aggiorna ogni
+branch target dal remoto con un fast-forward prima di applicare la release.
+Sul branch sorgente non modifica la history: verifica che contenga il branch
+remoto, consentendo quindi un sorgente uguale o avanti ma non dietro/divergente.
+
+```js
+syncTargetsWithRemote: true
+```
+
+Se il branch locale e quello remoto sono divergenti, il versioner si ferma
+prima di creare o pubblicare commit di release.
+
 ### `autoPushGeneratedLockfile`
 
 Serve per gestire il caso in cui un preflight generi `package-lock.json` e il tool si fermerebbe perché il repo non è più pulito.
@@ -567,7 +579,7 @@ La sezione `tag` crea tag Git locali dopo i commit di release riusciti.
 git: {
   tag: {
     enabled: true,
-    targets: 'versions',
+    targets: 'current_version',
     name: 'app-v{{version}}',
     message: 'Versione {{version}} del {{stamp}} - app',
     annotated: true,
@@ -579,7 +591,7 @@ git: {
 Campi principali:
 
 - `enabled`: abilita la creazione tag.
-- `targets`: branch da taggare. Valori utili: `current`, `versions`, `all` oppure lista di branch.
+- `targets`: branch da taggare. Valori utili: `current`, `all`, un branch esplicito oppure una lista di branch.
 - `name`: template del nome tag.
 - `message`: template del messaggio per tag annotati.
 - `annotated`: se `true`, crea tag annotati; se `false`, tag lightweight.

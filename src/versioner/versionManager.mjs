@@ -20,12 +20,17 @@ import {
   setGitlink,
   commit as gitCommit,
   checkout,
+  checkoutBranch,
   checkoutNew,
   branchDelete,
   cherryPick,
   cherryPickAbort,
   amendMessage,
   merge,
+  mergeAbort,
+  fetchBranch,
+  fastForward,
+  isAncestor,
   push,
   pushHeadToBranch,
   getDefaultRemote,
@@ -114,7 +119,7 @@ function normalizeTagConfig(gitCfg) {
   };
 }
 
-function resolveTagTargetBranches(tagCfg, branchHeads, currentBranch, versionsBranch) {
+function resolveTagTargetBranches(tagCfg, branchHeads, currentBranch) {
   const available = Object.keys(branchHeads || {});
   const requested = tagCfg.targets ?? 'current';
   const values = Array.isArray(requested) ? requested : [requested];
@@ -123,7 +128,6 @@ function resolveTagTargetBranches(tagCfg, branchHeads, currentBranch, versionsBr
   for (const value of values) {
     if (value === 'all') targets.push(...available);
     else if (value === 'current') targets.push(currentBranch);
-    else if (value === 'versions') targets.push(versionsBranch || 'versions');
     else targets.push(String(value));
   }
 
@@ -324,7 +328,7 @@ async function applyTagsForBranchHeads(repoRoot, {
   const tagCfg = normalizeTagConfig(gitCfg);
   if (!tagCfg.enabled) return [];
 
-  const targetBranches = resolveTagTargetBranches(tagCfg, branchHeads, currentBranch, gitCfg?.versionsBranch);
+  const targetBranches = resolveTagTargetBranches(tagCfg, branchHeads, currentBranch);
   if (!targetBranches.length) return [];
 
   const planned = [];
@@ -741,7 +745,7 @@ export class VersionManager {
 
     const varsBase = { repo: repoCfg.id || '', version: versionForMessage, stamp };
 
-    if (!branches.length && !(commitPerBranch && applyPerBranchMode && gitCfg.versionsBranch)) {
+    if (!branches.length) {
       const curBranch = await getCurrentBranch(repoRoot);
 
       if (writeOnlyApplyMode) {
@@ -776,9 +780,6 @@ export class VersionManager {
 
       if (doPush) {
         await push(repoRoot);
-        if (gitCfg.versionsBranch) {
-          await pushHeadToBranch(repoRoot, gitCfg.versionsBranch);
-        }
       }
 
       const branchHeads = { [curBranch]: newHead };
@@ -835,14 +836,10 @@ export class VersionManager {
           const remote = b.remote || null;
           await pushHeadToBranch(repoRoot, b.name, remote);
         }
-        if (gitCfg.versionsBranch) {
-          await pushHeadToBranch(repoRoot, gitCfg.versionsBranch);
-        }
       }
 
       const branchHeads = { [curBranch]: headSha };
       for (const b of branches) branchHeads[b.name] = headSha;
-      if (gitCfg.versionsBranch) branchHeads[gitCfg.versionsBranch] = headSha;
       const tags = await applyTagsForBranchHeads(repoRoot, {
         gitCfg,
         varsBase,
@@ -892,18 +889,32 @@ export class VersionManager {
           });
         }
 
-        if (gitCfg.versionsBranch && !targets.some((x) => x?.name === gitCfg.versionsBranch)) {
-          targets.push({
-            name: gitCfg.versionsBranch,
-            remote: gitCfg.versionsBranchRemote || null,
-            message: gitCfg.versionsBranchMessage || 'Versione {{version}} del {{stamp}} - {{branch}}',
-            forceWithLease: true,
-            isVersionsBranch: true,
-          });
-        }
-
         for (const b of targets) {
-          await checkout(repoRoot, b.name);
+          const remote = b.remote || (await getDefaultRemote(repoRoot));
+          if (doPush && gitCfg.syncTargetsWithRemote !== false) {
+            if (!remote) throw new Error(`Nessun remote per sincronizzare il branch target ${b.name} (repo: ${repoRoot})`);
+            await fetchBranch(repoRoot, remote, b.name);
+          }
+
+          await checkoutBranch(repoRoot, b.name, remote);
+
+          if (doPush && gitCfg.syncTargetsWithRemote !== false) {
+            try {
+              if (b.name === originalBranch) {
+                const sourceContainsRemote = await isAncestor(repoRoot, `${remote}/${b.name}`, 'HEAD');
+                if (!sourceContainsRemote) {
+                  throw new Error(`il branch sorgente è dietro o divergente da ${remote}/${b.name}`);
+                }
+              } else {
+                await fastForward(repoRoot, `${remote}/${b.name}`);
+              }
+            } catch (e) {
+              throw new Error(
+                `Branch target ${b.name} non aggiornabile in fast-forward da ${remote}/${b.name}. `
+                + `Riallinealo prima della release: ${e?.message ?? e}`
+              );
+            }
+          }
 
           const targetInitialStatus = await getStatusPorcelain(repoRoot);
           if (targetInitialStatus) {
@@ -913,11 +924,9 @@ export class VersionManager {
             }
           }
 
-          const isVersionsBranchTarget = Boolean(b.isVersionsBranch) || (gitCfg.versionsBranch && b.name === gitCfg.versionsBranch);
           const shouldMergeSourceBranch = (
               b.name !== originalBranch
               && (gitCfg.mergeCurrentBranchIntoTargets !== false)
-              && (!isVersionsBranchTarget || gitCfg.mergeCurrentBranchIntoVersionsBranch === true)
           );
 
           if (shouldMergeSourceBranch) {
@@ -930,6 +939,7 @@ export class VersionManager {
                 dryRun,
               });
               if (!resolved) {
+                await mergeAbort(repoRoot);
                 throw new Error(`Merge fallito di ${originalBranch} su ${b.name}: ${e?.message ?? e}`);
               }
             }
@@ -956,10 +966,13 @@ export class VersionManager {
           const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
           branchHeads[b.name] = branchHead;
 
-          if (doPush) {
+        }
+
+        if (doPush) {
+          for (const b of targets) {
             const remote = b.remote || (await getDefaultRemote(repoRoot));
             if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
-            await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`, Boolean(b.forceWithLease));
+            await push(repoRoot, remote, `${branchHeads[b.name]}:refs/heads/${b.name}`, Boolean(b.forceWithLease));
           }
         }
       } finally {
