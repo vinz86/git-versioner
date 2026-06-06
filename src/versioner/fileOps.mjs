@@ -89,14 +89,17 @@ export async function applyJsonSet(repoRoot, step, vars, dryRun) {
   const exists = await fileExists(abs);
   if (!exists && !step.createIfMissing) return { changed: false, file: step.file, skipped: true };
 
+  let obj;
   if (!exists && step.createIfMissing) {
     const initial = step.initial != null ? renderObjectTemplates(step.initial, vars) : {};
-  await fs.mkdir(path.dirname(abs), { recursive: true });
+    obj = initial;
+    if (!dryRun) await fs.mkdir(path.dirname(abs), { recursive: true });
     if (!dryRun) await writeJson(abs, initial);
+  } else {
+    obj = await readJson(abs);
   }
 
-  const obj = await readJson(abs);
-  let changed = false;
+  let changed = !exists;
 
   for (const [dotPath, tpl] of Object.entries(step.set || {})) {
     const v = renderTemplate(tpl, vars);

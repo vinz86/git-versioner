@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 import { CommitClassifier } from './commitClassifier.mjs';
 import { bumpSemver, parseSemver, maxBumpKind } from './semver.mjs';
@@ -19,16 +20,26 @@ import {
   setGitlink,
   commit as gitCommit,
   checkout,
+  checkoutBranch,
   checkoutNew,
   branchDelete,
   cherryPick,
   cherryPickAbort,
   amendMessage,
   merge,
+  mergeAbort,
+  fetchBranch,
+  fastForward,
+  isAncestor,
   push,
   pushHeadToBranch,
   getDefaultRemote,
+  getUnmergedPaths,
+  tagExists,
+  createTag,
+  pushTag,
 } from './git/git.mjs';
+import { writeChangelog } from '../../changelog/changelog.mjs';
 
 function nowSafeStamp() {
   const d = new Date();
@@ -51,15 +62,15 @@ function remapInheritedBump(depBump, unit) {
 
 function parseStatusPaths(status) {
   return String(status || '')
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter(Boolean)
-    .map((line) => {
-      const raw = line.slice(3).trim();
-      const pathPart = raw.includes(' -> ') ? raw.split(' -> ').pop() : raw;
-      return pathPart?.trim() || '';
-    })
-    .filter(Boolean);
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter(Boolean)
+      .map((line) => {
+        const raw = line.slice(3).trim();
+        const pathPart = raw.includes(' -> ') ? raw.split(' -> ').pop() : raw;
+        return pathPart?.trim() || '';
+      })
+      .filter(Boolean);
 }
 
 function statusHasOnlyAllowedPaths(status, allowedPaths) {
@@ -67,6 +78,85 @@ function statusHasOnlyAllowedPaths(status, allowedPaths) {
   if (!allowed.size) return false;
   const paths = parseStatusPaths(status);
   return paths.length > 0 && paths.every((p) => allowed.has(p) || [...allowed].some((a) => p === a || p.startsWith(`${a}/`)));
+}
+
+function getMatchingPaths(status, allowedPaths) {
+  const allowed = (allowedPaths || []).filter(Boolean).map(String);
+  if (!allowed.length) return [];
+  return parseStatusPaths(status).filter((p) => allowed.some((a) => p === a || p.startsWith(`${a}/`)));
+}
+
+function statusHasOnlyAllowedAndGeneratedPaths(status, allowedPaths, generatedPaths) {
+  const combined = [...(allowedPaths || []), ...(generatedPaths || [])];
+  return statusHasOnlyAllowedPaths(status, combined);
+}
+
+function addPendingSubmoduleUpdate(pending, branchName, submodulePath, sha) {
+  if (!branchName || !submodulePath || !sha) return;
+  if (!pending[branchName]) pending[branchName] = [];
+  const existing = pending[branchName].find((upd) => upd.submodulePath === submodulePath);
+  if (existing) {
+    existing.sha = sha;
+    return;
+  }
+  pending[branchName].push({ submodulePath, sha });
+}
+
+function normalizeTagConfig(gitCfg) {
+  const cfg = gitCfg?.tag ?? gitCfg?.tags ?? null;
+  if (!cfg) return { enabled: false };
+  if (cfg === true) return { enabled: true };
+  if (cfg === false) return { enabled: false };
+  return {
+    enabled: Boolean(cfg.enabled),
+    name: cfg.name || cfg.template || 'v{{version}}',
+    message: cfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}',
+    annotated: cfg.annotated !== false,
+    targets: cfg.targets || cfg.target || 'current',
+    allowExisting: Boolean(cfg.allowExisting),
+    push: cfg.push,
+    remote: cfg.remote || null,
+  };
+}
+
+function resolveTagTargetBranches(tagCfg, branchHeads, currentBranch) {
+  const available = Object.keys(branchHeads || {});
+  const requested = tagCfg.targets ?? 'current';
+  const values = Array.isArray(requested) ? requested : [requested];
+  const targets = [];
+
+  for (const value of values) {
+    if (value === 'all') targets.push(...available);
+    else if (value === 'current') targets.push(currentBranch);
+    else targets.push(String(value));
+  }
+
+  return [...new Set(targets)].filter((branch) => branch && branchHeads?.[branch]);
+}
+
+async function runCommand(command, cwd) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      stdio: 'inherit',
+      env: process.env,
+    });
+
+    child.on('error', (error) => {
+      reject(new Error(`Comando preflight fallito: ${command}\n${error?.message ?? error}`));
+    });
+
+    child.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve({ code, signal });
+        return;
+      }
+
+      const exitInfo = signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`;
+      reject(new Error(`Comando preflight fallito: ${command} (${exitInfo})`));
+    });
+  });
 }
 
 async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allowCreate = true) {
@@ -86,8 +176,8 @@ async function readUnitCurrentVersion(repoRoot, unit, varsForInit, dryRun, allow
     if (!canCreate) throw new Error(`File versione mancante: ${unit.version.file} (repo: ${repoRoot})`);
 
     const initial = unit.version.initial
-      ? renderObjectTemplates(unit.version.initial, varsForInit)
-      : { name: unit.name || unit.id, [field]: defV, date: varsForInit?.stamp };
+        ? renderObjectTemplates(unit.version.initial, varsForInit)
+        : { name: unit.name || unit.id, [field]: defV, date: varsForInit?.stamp };
 
     if (initial[field] == null) initial[field] = defV;
 
@@ -167,8 +257,150 @@ async function isAutoBumpCommit(repoRoot, commitHash, subject, autoCfg) {
   return ok;
 }
 
+async function isGeneratedLockfileSyncCommit(repoRoot, commitHash, subject) {
+  const subjectRe = /^chore\(versioner\): sync generated package-lock\.json(?:\b|$)/i;
+  if (!subjectRe.test(subject ?? '')) return false;
+
+  const paths = await diffNameOnly(repoRoot, commitHash);
+  return paths.length > 0 && paths.every((p) => {
+    const pp = p.replace(/\\/g, '/');
+    return pp === 'package-lock.json' || pp.endsWith('/package-lock.json');
+  });
+}
+
 async function updateParentSubmoduleToSha(parentRoot, submodulePath, sha) {
   await setGitlink(parentRoot, submodulePath, sha);
+}
+
+async function applyUnitWrites(repoRoot, unitResults, varsBase, dryRun) {
+  const changes = [];
+  for (const u of (unitResults || [])) {
+    const vars = { ...varsBase, unit: u.unitId, name: u.unitId, prevVersion: u.from, bump: u.bump, version: u.to };
+    for (const step of (u.plannedWrites || [])) {
+      let res;
+      if (step.type === 'json-set') res = await applyJsonSet(repoRoot, step, vars, dryRun);
+      else if (step.type === 'readme-marker') res = await applyReadmeMarker(repoRoot, step, vars, dryRun);
+      else if (step.type === 'text-replace') res = await applyTextReplace(repoRoot, step, vars, dryRun);
+      else throw new Error(`Step sconosciuto: ${step.type} (unit ${u.unitId})`);
+      if (res) changes.push(res);
+    }
+  }
+  return changes;
+}
+
+async function applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, branchName) {
+  if (!pendingSubmoduleUpdates?.[branchName]) return;
+  for (const upd of pendingSubmoduleUpdates[branchName]) {
+    await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
+  }
+}
+
+async function applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun) {
+  if (!releaseBaseFile || !releaseBaseHash) return;
+  const abs = path.join(repoRoot, releaseBaseFile);
+  await fs.mkdir(path.dirname(abs), { recursive: true });
+  if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
+}
+
+async function resolveGeneratedMergeConflicts(repoRoot, { releaseBaseFile, releaseBaseHash, dryRun }) {
+  const unmerged = await getUnmergedPaths(repoRoot);
+  if (!unmerged.length) return false;
+
+  const generated = new Set([releaseBaseFile].filter(Boolean));
+  const unsupported = unmerged.filter((file) => !generated.has(file));
+  if (unsupported.length) return false;
+
+  if (releaseBaseFile && unmerged.includes(releaseBaseFile)) {
+    await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+    await addPath(repoRoot, releaseBaseFile);
+  }
+
+  return true;
+}
+
+async function applyTagsForBranchHeads(repoRoot, {
+  gitCfg,
+  varsBase,
+  branchHeads,
+  currentBranch,
+  doPush,
+}) {
+  const tagCfg = normalizeTagConfig(gitCfg);
+  if (!tagCfg.enabled) return [];
+
+  const targetBranches = resolveTagTargetBranches(tagCfg, branchHeads, currentBranch);
+  if (!targetBranches.length) return [];
+
+  const planned = [];
+  const names = new Map();
+  for (const branch of targetBranches) {
+    const sha = branchHeads[branch];
+    const vars = { ...varsBase, branch, sha };
+    const name = renderTemplate(tagCfg.name, vars).trim();
+    if (!name) throw new Error(`Nome tag vuoto per branch ${branch} (${repoRoot})`);
+
+    const existing = names.get(name);
+    if (existing) {
+      if (existing.sha === sha) continue;
+      throw new Error(`Nome tag duplicato "${name}" per branch ${existing.branch} e ${branch}. Usa {{branch}} nel template o limita tag.targets.`);
+    }
+    names.set(name, { branch, sha });
+
+    planned.push({
+      branch,
+      sha,
+      name,
+      message: renderTemplate(tagCfg.message, vars),
+    });
+  }
+
+  const created = [];
+  for (const item of planned) {
+    if (await tagExists(repoRoot, item.name)) {
+      if (tagCfg.allowExisting) {
+        created.push({ ...item, created: false, existing: true, pushed: false });
+        continue;
+      }
+      throw new Error(`Tag già esistente: ${item.name} (${repoRoot})`);
+    }
+
+    await createTag(repoRoot, item.name, item.sha, {
+      annotated: tagCfg.annotated,
+      message: item.message,
+    });
+
+    let pushed = false;
+    const shouldPushTag = tagCfg.push === null || tagCfg.push === undefined
+      ? doPush
+      : Boolean(tagCfg.push) && doPush;
+    if (shouldPushTag) {
+      await pushTag(repoRoot, item.name, tagCfg.remote || null);
+      pushed = true;
+    }
+
+    created.push({ ...item, created: true, existing: false, pushed });
+  }
+
+  return created;
+}
+
+async function resolveVersionForMessage(repoRoot, repoCfg, unitResults, stamp) {
+  const messageUnitId = repoCfg?.git?.messageFromUnit;
+  const resultVersion = (messageUnitId && unitResults.find((u) => u.unitId === messageUnitId)?.to)
+    || unitResults[0]?.to;
+  if (resultVersion) return resultVersion;
+
+  const unit = (repoCfg?.units || []).find((u) => u.id === messageUnitId)
+    || (repoCfg?.units || []).find((u) => u.type === 'app')
+    || (repoCfg?.units || [])[0];
+  if (!unit?.version?.file) return '0.0.0';
+
+  const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp };
+  try {
+    return await readUnitCurrentVersion(repoRoot, unit, varsForInit, false, false);
+  } catch {
+    return '0.0.0';
+  }
 }
 
 export class VersionManager {
@@ -177,7 +409,88 @@ export class VersionManager {
     this.classifier = new CommitClassifier(config.rules || {});
   }
 
-  async run({ since = null, commit = null, push = null, allowDirty = false, dryRun = false } = {}) {
+  async #runPreflightCommands({ repoRoot, repoCfg, dryRun }) {
+    const commands = repoCfg?.preflight?.commands || [];
+    if (!Array.isArray(commands) || !commands.length) return;
+    if (dryRun) return;
+
+    for (const command of commands) {
+      if (!command || !String(command).trim()) continue;
+      const normalized = String(command).trim();
+      console.log(`[git-versioner] preflight > ${normalized}`);
+      await runCommand(normalized, repoRoot);
+    }
+  }
+
+  async #autoPushGeneratedLockfile({ repoRoot, repoCfg, status }) {
+    const files = getMatchingPaths(status, ['package-lock.json']);
+    if (!files.length) return false;
+
+    const msg = 'chore(versioner): sync generated package-lock.json';
+
+    for (const file of files) await addPath(repoRoot, file);
+    await gitCommit(repoRoot, msg);
+    await push(repoRoot);
+    return true;
+  }
+
+  async #applyChangelogIfEnabled({
+    repoRoot,
+    repoCfg,
+    unitResults,
+    unitMap,
+    dryRun,
+    changelog = false,
+    noChangelog = false,
+  }) {
+    const enabledByConfig = Boolean(repoCfg?.changelog?.enabled);
+    const hasEnabledTargets = Boolean(repoCfg?.changelog?.global?.enabled) || Boolean(repoCfg?.changelog?.versioned?.enabled);
+    const shouldWrite = !noChangelog && ((enabledByConfig && hasEnabledTargets) || changelog);
+
+    if (!shouldWrite) return null;
+    if (dryRun) return null;
+    if (!unitResults?.length) return null;
+
+    const messageUnitId = repoCfg?.git?.messageFromUnit;
+    const version = (messageUnitId && unitResults.find((unit) => unit.unitId === messageUnitId)?.to)
+      || unitResults.find((unit) => repoCfg?.units?.some((cfgUnit) => cfgUnit.id === unit.unitId && cfgUnit.type === 'app'))?.to
+      || unitResults[0]?.to
+      || null;
+
+    const linkedRepos = (this.config?.repos || [])
+      .filter((candidate) => candidate?.git?.linkedSubmoduleInParent?.mode === 'propagate' && candidate.git.linkedSubmoduleInParent.parentRepoId === repoCfg.id)
+      .map((candidate) => ({
+        repoCfg: candidate,
+        submodulePath: candidate.git.linkedSubmoduleInParent.submodulePath,
+        unitResults: [],
+      }));
+
+    return await writeChangelog({
+      repoRoot,
+      version,
+      releaseDate: new Date(),
+      repoCfg,
+      unitResults,
+      unitMap,
+      classifier: this.classifier,
+      linkedRepos,
+      readVersion: async (targetRepoRoot, unit) => {
+        const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
+        return await readUnitCurrentVersion(targetRepoRoot, unit, varsForInit, false, false);
+      },
+    });
+  }
+
+  async run({
+              since = null,
+              commit = null,
+              push = null,
+              allowDirty = false,
+              dryRun = false,
+              changelog = false,
+              noChangelog = false,
+              autoPushGeneratedLockfile = null,
+            } = {}) {
     const repoCfgs = this.config.repos || [];
     if (!repoCfgs.length) throw new Error('Config non valida: manca "repos"');
 
@@ -209,10 +522,36 @@ export class VersionManager {
       if (!(await isWorkTree(repoRoot))) throw new Error(`Non è un work tree git: ${repoRoot}`);
 
       const requireClean = Boolean(repoCfg.git?.requireClean);
-      const initialStatus = await getStatusPorcelain(repoRoot);
+      const doCommit = (commit === null) ? Boolean(repoCfg.git?.commit ?? true) : Boolean(commit);
+      const doPush = (push === null) ? Boolean(repoCfg.git?.push ?? false) : Boolean(push);
+      const shouldAutoPushGeneratedLockfile = (autoPushGeneratedLockfile === null)
+        ? Boolean(repoCfg.git?.autoPushGeneratedLockfile ?? false)
+        : Boolean(autoPushGeneratedLockfile);
+
+      let initialStatus = await getStatusPorcelain(repoRoot);
       const allowedDirtyPaths = (childLinks.get(repoCfg.id) || []).map((x) => x.submodulePath);
+
+      if (initialStatus && !allowDirty && requireClean && shouldAutoPushGeneratedLockfile && doCommit && doPush
+        && statusHasOnlyAllowedAndGeneratedPaths(initialStatus, allowedDirtyPaths, ['package-lock.json'])) {
+        await this.#autoPushGeneratedLockfile({ repoRoot, repoCfg, status: initialStatus });
+        initialStatus = await getStatusPorcelain(repoRoot);
+      }
+
       if (initialStatus && !allowDirty && requireClean && !statusHasOnlyAllowedPaths(initialStatus, allowedDirtyPaths)) {
         throw new Error(`Repo non pulito: ${repoRoot}\n${initialStatus}`);
+      }
+
+      await this.#runPreflightCommands({ repoRoot, repoCfg, dryRun });
+
+      let postPreflightStatus = await getStatusPorcelain(repoRoot);
+      if (postPreflightStatus && !allowDirty && requireClean && shouldAutoPushGeneratedLockfile && doCommit && doPush
+        && statusHasOnlyAllowedAndGeneratedPaths(postPreflightStatus, allowedDirtyPaths, ['package-lock.json'])) {
+        await this.#autoPushGeneratedLockfile({ repoRoot, repoCfg, status: postPreflightStatus });
+        postPreflightStatus = await getStatusPorcelain(repoRoot);
+      }
+
+      if (postPreflightStatus && !allowDirty && requireClean && !statusHasOnlyAllowedPaths(postPreflightStatus, allowedDirtyPaths)) {
+        throw new Error(`Repo non pulito dopo i preflight: ${repoRoot}\n${postPreflightStatus}`);
       }
 
       const baselineRef = await baselineForRepo(repoRoot, this.config.baseline || {}, since);
@@ -229,6 +568,7 @@ export class VersionManager {
         const filtered = [];
         for (const c of commits) {
           if (await isAutoBumpCommit(repoRoot, c.hash, c.subject, u.autoBump)) continue;
+          if (await isGeneratedLockfileSyncCommit(repoRoot, c.hash, c.subject)) continue;
           filtered.push(c);
         }
         info.commits = filtered;
@@ -238,7 +578,8 @@ export class VersionManager {
         globalUnitBumps.set(u.id, info.bump);
       }
 
-      repoPlans.push({ repoCfg, repoRoot, baselineRef, applyPerBranchMode, requireClean, unitMap });
+      const currentBranch = await getCurrentBranch(repoRoot);
+      repoPlans.push({ repoCfg, repoRoot, baselineRef, applyPerBranchMode, requireClean, unitMap, currentBranch });
     }
 
     for (const plan of repoPlans) {
@@ -301,6 +642,18 @@ export class VersionManager {
         await writeReleaseBase(repoRoot, fileName, newestRelevantHash, dryRun);
       }
 
+      if (!applyPerBranchMode) {
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          unitResults,
+          unitMap,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
+      }
+
       const doCommit = (commit === null) ? Boolean(repoCfg.git?.commit ?? true) : Boolean(commit);
       const doPush = (push === null) ? Boolean(repoCfg.git?.push ?? false) : Boolean(push);
       const pendingSubmoduleUpdates = pendingSubmoduleUpdatesByParent.get(repoCfg.id) || {};
@@ -309,6 +662,7 @@ export class VersionManager {
         repoRoot,
         repoCfg,
         unitResults,
+        unitMap,
         stamp,
         doCommit,
         doPush,
@@ -319,14 +673,19 @@ export class VersionManager {
         releaseBaseHash: newestRelevantHash,
         releaseBaseFile: (this.config.baseline?.strategy === 'file') ? (this.config.baseline?.file || '.release-base') : null,
         pendingSubmoduleUpdates,
+        changelog,
+        noChangelog,
       });
 
       const link = repoCfg?.git?.linkedSubmoduleInParent;
-      if (link?.mode === 'propagate' && link.parentRepoId && link.submodulePath && didGit?.branchHeads) {
+      if (link?.mode === 'propagate' && link.parentRepoId && link.submodulePath && didGit?.committed && didGit?.branchHeads) {
         const parentPending = pendingSubmoduleUpdatesByParent.get(link.parentRepoId) || {};
+        const parentPlan = repoPlans.find((candidate) => candidate.repoCfg?.id === link.parentRepoId);
         for (const [branchName, sha] of Object.entries(didGit.branchHeads)) {
-          if (!parentPending[branchName]) parentPending[branchName] = [];
-          parentPending[branchName].push({ submodulePath: link.submodulePath, sha });
+          addPendingSubmoduleUpdate(parentPending, branchName, link.submodulePath, sha);
+          if (branchName === plan.currentBranch && parentPlan?.currentBranch && parentPlan.currentBranch !== branchName) {
+            addPendingSubmoduleUpdate(parentPending, parentPlan.currentBranch, link.submodulePath, sha);
+          }
         }
         pendingSubmoduleUpdatesByParent.set(link.parentRepoId, parentPending);
       }
@@ -337,9 +696,30 @@ export class VersionManager {
     return { stamp, results };
   }
 
-  async #gitActions({ repoRoot, repoCfg, unitResults, stamp, doCommit, doPush, allowDirty, dryRun, requireClean, applyPerBranchMode, releaseBaseHash, releaseBaseFile, pendingSubmoduleUpdates = {} }) {
-    if (!doCommit && !doPush) return { committed: false, pushed: false, mode: 'none' };
+  async #gitActions({
+                      repoRoot,
+                      repoCfg,
+                      unitResults,
+                      unitMap,
+                      stamp,
+                      doCommit,
+                      doPush,
+                      allowDirty,
+                      dryRun,
+                      requireClean,
+                      applyPerBranchMode,
+                      releaseBaseHash,
+                      releaseBaseFile,
+                      pendingSubmoduleUpdates = {},
+                      changelog = false,
+                      noChangelog = false,
+                    }) {
     if (dryRun) return { committed: false, pushed: false, mode: 'dry-run' };
+
+    const writeOnlyApplyMode = applyPerBranchMode && !doCommit && !doPush;
+    if (!writeOnlyApplyMode && !doCommit && !doPush) {
+      return { committed: false, pushed: false, mode: 'none' };
+    }
 
     const status = await getStatusPorcelain(repoRoot);
     const hasPendingSubmoduleUpdates = Object.keys(pendingSubmoduleUpdates || {}).length > 0;
@@ -352,7 +732,7 @@ export class VersionManager {
       return { committed: false, pushed: false, mode: 'no-changes' };
     }
 
-    if (allowDirty) throw new Error('commit/push non consentiti con --allow-dirty');
+    if (!writeOnlyApplyMode && allowDirty) throw new Error('commit/push non consentiti con --allow-dirty');
     if (requireClean) {
       // check iniziale già eseguito in run()
     }
@@ -361,22 +741,38 @@ export class VersionManager {
     const branches = gitCfg.branches || [];
     const commitPerBranch = Boolean(gitCfg.commitPerBranch);
 
-    const versionForMessage = (gitCfg.messageFromUnit && unitResults.find((u) => u.unitId === gitCfg.messageFromUnit)?.to)
-      || unitResults[0]?.to
-      || '0.0.0';
+    const versionForMessage = await resolveVersionForMessage(repoRoot, repoCfg, unitResults, stamp);
 
     const varsBase = { repo: repoCfg.id || '', version: versionForMessage, stamp };
 
     if (!branches.length) {
       const curBranch = await getCurrentBranch(repoRoot);
+
+      if (writeOnlyApplyMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+        await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          unitResults,
+          unitMap,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
+        const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+        return { committed: false, pushed: false, mode: 'write-working-tree', branches: [curBranch], branchHeads: { [curBranch]: headSha } };
+      }
+
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
-      if (pendingSubmoduleUpdates[curBranch]) {
-        for (const upd of pendingSubmoduleUpdates[curBranch]) {
-          await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
-        }
+      if (applyPerBranchMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
       }
+      await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
@@ -384,24 +780,51 @@ export class VersionManager {
 
       if (doPush) {
         await push(repoRoot);
-        if (gitCfg.versionsBranch) {
-          await pushHeadToBranch(repoRoot, gitCfg.versionsBranch);
-        }
       }
 
-      return { committed: true, pushed: Boolean(doPush), mode: 'single-branch', branch: curBranch, branchHeads: { [curBranch]: newHead } };
+      const branchHeads = { [curBranch]: newHead };
+      const tags = await applyTagsForBranchHeads(repoRoot, {
+        gitCfg,
+        varsBase,
+        branchHeads,
+        currentBranch: curBranch,
+        doPush,
+      });
+
+      return {
+        committed: true,
+        pushed: Boolean(doPush),
+        mode: 'single-branch-commit',
+        branches: [curBranch],
+        branchHeads,
+        tags,
+      };
     }
 
     if (!commitPerBranch) {
       const curBranch = await getCurrentBranch(repoRoot);
+
+      if (writeOnlyApplyMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+        await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          unitResults,
+          unitMap,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
+        const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+        return { committed: false, pushed: false, mode: 'write-working-tree', branches: [curBranch], branchHeads: { [curBranch]: headSha } };
+      }
+
       const msgTpl = gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
       const msg = renderTemplate(msgTpl, { ...varsBase, branch: curBranch });
 
-      if (pendingSubmoduleUpdates[curBranch]) {
-        for (const upd of pendingSubmoduleUpdates[curBranch]) {
-          await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
-        }
-      }
+      await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, curBranch);
 
       await addAll(repoRoot);
       await gitCommit(repoRoot, msg);
@@ -413,19 +836,46 @@ export class VersionManager {
           const remote = b.remote || null;
           await pushHeadToBranch(repoRoot, b.name, remote);
         }
-        if (gitCfg.versionsBranch) {
-          await pushHeadToBranch(repoRoot, gitCfg.versionsBranch);
-        }
       }
 
       const branchHeads = { [curBranch]: headSha };
       for (const b of branches) branchHeads[b.name] = headSha;
-      if (gitCfg.versionsBranch) branchHeads[gitCfg.versionsBranch] = headSha;
-      return { committed: true, pushed: Boolean(doPush), mode: 'single-commit-multi-push', branchHeads };
+      const tags = await applyTagsForBranchHeads(repoRoot, {
+        gitCfg,
+        varsBase,
+        branchHeads,
+        currentBranch: curBranch,
+        doPush,
+      });
+      return { committed: true, pushed: Boolean(doPush), mode: 'single-commit-multi-push', branchHeads, tags };
     }
 
     if (applyPerBranchMode) {
       const originalBranch = await getCurrentBranch(repoRoot);
+
+      if (writeOnlyApplyMode) {
+        await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+        await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+        await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, originalBranch);
+        await this.#applyChangelogIfEnabled({
+          repoRoot,
+          repoCfg,
+          unitResults,
+          unitMap,
+          dryRun,
+          changelog,
+          noChangelog,
+        });
+        const headSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
+        return {
+          committed: false,
+          pushed: false,
+          mode: 'write-working-tree',
+          branches: [originalBranch],
+          branchHeads: { [originalBranch]: headSha },
+        };
+      }
+
       const branchHeads = {};
 
       try {
@@ -439,55 +889,74 @@ export class VersionManager {
           });
         }
 
-        if (gitCfg.versionsBranch && !targets.some((x) => x?.name === gitCfg.versionsBranch)) {
-          targets.push({
-            name: gitCfg.versionsBranch,
-            remote: gitCfg.versionsBranchRemote || null,
-            message: gitCfg.versionsBranchMessage || 'Versione {{version}} del {{stamp}} - {{branch}}',
-            forceWithLease: true,
-            isVersionsBranch: true,
-          });
-        }
-
         for (const b of targets) {
-          await checkout(repoRoot, b.name);
+          const remote = b.remote || (await getDefaultRemote(repoRoot));
+          if (doPush && gitCfg.syncTargetsWithRemote !== false) {
+            if (!remote) throw new Error(`Nessun remote per sincronizzare il branch target ${b.name} (repo: ${repoRoot})`);
+            await fetchBranch(repoRoot, remote, b.name);
+          }
 
-          const isVersionsBranchTarget = Boolean(b.isVersionsBranch) || (gitCfg.versionsBranch && b.name === gitCfg.versionsBranch);
+          await checkoutBranch(repoRoot, b.name, remote);
+
+          if (doPush && gitCfg.syncTargetsWithRemote !== false) {
+            try {
+              if (b.name === originalBranch) {
+                const sourceContainsRemote = await isAncestor(repoRoot, `${remote}/${b.name}`, 'HEAD');
+                if (!sourceContainsRemote) {
+                  throw new Error(`il branch sorgente è dietro o divergente da ${remote}/${b.name}`);
+                }
+              } else {
+                await fastForward(repoRoot, `${remote}/${b.name}`);
+              }
+            } catch (e) {
+              throw new Error(
+                `Branch target ${b.name} non aggiornabile in fast-forward da ${remote}/${b.name}. `
+                + `Riallinealo prima della release: ${e?.message ?? e}`
+              );
+            }
+          }
+
+          const targetInitialStatus = await getStatusPorcelain(repoRoot);
+          if (targetInitialStatus) {
+            const allowedPendingPaths = (pendingSubmoduleUpdates?.[b.name] || []).map((upd) => upd.submodulePath);
+            if (!statusHasOnlyAllowedPaths(targetInitialStatus, allowedPendingPaths)) {
+              throw new Error(`Branch target non pulito prima della release: ${b.name} (${repoRoot})\n${targetInitialStatus}`);
+            }
+          }
+
           const shouldMergeSourceBranch = (
-            b.name !== originalBranch
-            && (gitCfg.mergeCurrentBranchIntoTargets !== false)
-            && (!isVersionsBranchTarget || gitCfg.mergeCurrentBranchIntoVersionsBranch === true)
+              b.name !== originalBranch
+              && (gitCfg.mergeCurrentBranchIntoTargets !== false)
           );
 
           if (shouldMergeSourceBranch) {
             try {
               await merge(repoRoot, originalBranch, { noEdit: true, noFF: true, noCommit: true });
             } catch (e) {
-              throw new Error(`Merge fallito di ${originalBranch} su ${b.name}: ${e?.message ?? e}`);
+              const resolved = await resolveGeneratedMergeConflicts(repoRoot, {
+                releaseBaseFile,
+                releaseBaseHash,
+                dryRun,
+              });
+              if (!resolved) {
+                await mergeAbort(repoRoot);
+                throw new Error(`Merge fallito di ${originalBranch} su ${b.name}: ${e?.message ?? e}`);
+              }
             }
           }
 
-          for (const u of unitResults) {
-            const vars = { ...varsBase, unit: u.unitId, name: u.unitId, prevVersion: u.from, bump: u.bump, version: u.to };
-            for (const step of (u.plannedWrites || [])) {
-              if (step.type === 'json-set') await applyJsonSet(repoRoot, step, vars, dryRun);
-              else if (step.type === 'readme-marker') await applyReadmeMarker(repoRoot, step, vars, dryRun);
-              else if (step.type === 'text-replace') await applyTextReplace(repoRoot, step, vars, dryRun);
-              else throw new Error(`Step sconosciuto: ${step.type} (unit ${u.unitId})`);
-            }
-          }
-
-          if (releaseBaseFile && releaseBaseHash) {
-            const abs = path.join(repoRoot, releaseBaseFile);
-            await fs.mkdir(path.dirname(abs), { recursive: true });
-            if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
-          }
-
-          if (pendingSubmoduleUpdates[b.name]) {
-            for (const upd of pendingSubmoduleUpdates[b.name]) {
-              await updateParentSubmoduleToSha(repoRoot, upd.submodulePath, upd.sha);
-            }
-          }
+          await applyUnitWrites(repoRoot, unitResults, varsBase, dryRun);
+          await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
+          await applyPendingSubmoduleUpdatesForBranch(repoRoot, pendingSubmoduleUpdates, b.name);
+          await this.#applyChangelogIfEnabled({
+            repoRoot,
+            repoCfg,
+            unitResults,
+            unitMap,
+            dryRun,
+            changelog,
+            noChangelog,
+          });
 
           const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
           const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
@@ -497,17 +966,33 @@ export class VersionManager {
           const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
           branchHeads[b.name] = branchHead;
 
-          if (doPush) {
+        }
+
+        if (doPush) {
+          for (const b of targets) {
             const remote = b.remote || (await getDefaultRemote(repoRoot));
             if (!remote) throw new Error(`Nessun remote per push (repo: ${repoRoot})`);
-            await push(repoRoot, remote, `HEAD:refs/heads/${b.name}`, Boolean(b.forceWithLease));
+            await push(repoRoot, remote, `${branchHeads[b.name]}:refs/heads/${b.name}`, Boolean(b.forceWithLease));
           }
         }
       } finally {
         await checkout(repoRoot, originalBranch);
       }
 
-      return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-apply', branches: Object.keys(branchHeads), branchHeads };
+      return {
+        committed: true,
+        pushed: Boolean(doPush),
+        mode: 'commit-per-branch-apply',
+        branches: Object.keys(branchHeads),
+        branchHeads,
+        tags: await applyTagsForBranchHeads(repoRoot, {
+          gitCfg,
+          varsBase,
+          branchHeads,
+          currentBranch: originalBranch,
+          doPush,
+        }),
+      };
     }
 
     const originalBranch = await getCurrentBranch(repoRoot);
@@ -524,6 +1009,8 @@ export class VersionManager {
 
     const baseSha = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
+    const branchHeads = {};
+
     try {
       for (const b of branches) {
         await checkout(repoRoot, b.name);
@@ -538,6 +1025,7 @@ export class VersionManager {
         const msgTpl = b.message || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}';
         const msg = renderTemplate(msgTpl, { ...varsBase, branch: b.name });
         await amendMessage(repoRoot, msg);
+        branchHeads[b.name] = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
 
         if (doPush) {
           const remote = b.remote || (await getDefaultRemote(repoRoot));
@@ -550,6 +1038,18 @@ export class VersionManager {
       await branchDelete(repoRoot, tmpBranch);
     }
 
-    return { committed: true, pushed: Boolean(doPush), mode: 'commit-per-branch-cherry-pick' };
+    return {
+      committed: true,
+      pushed: Boolean(doPush),
+      mode: 'commit-per-branch-cherry-pick',
+      branchHeads,
+      tags: await applyTagsForBranchHeads(repoRoot, {
+        gitCfg,
+        varsBase,
+        branchHeads,
+        currentBranch: originalBranch,
+        doPush,
+      }),
+    };
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "git-versioner",
-  "version": "0.1.1",
+  "version": "0.2.2",
   "private": true,
   "author": "Vinz",
   "type": "module",
@@ -9,6 +9,6 @@
     "git-versioner": "./bin/versioner.mjs"
   },
   "scripts": {
-    "test": "node -e \"console.log('TODO: tests')\""
+    "test": "node --test"
   }
 }

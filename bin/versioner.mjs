@@ -13,6 +13,9 @@
       allowDirty: false,
       dryRun: false,
       preid: null,
+      changelog: null,
+      noChangelog: false,
+      autoPushGeneratedLockfile: null
     };
 
     for (let i = 2; i < argv.length; i++) {
@@ -21,14 +24,21 @@
       else if (a === '--since') args.since = argv[++i];
       else if (a === '--commit') args.commit = true;
       else if (a === '--no-commit') args.commit = false;
+      else if (a === '--changelog') args.changelog = true;
+      else if (a === '--no-changelog') {
+        args.changelog = false;
+        args.noChangelog = true;
+      }
       else if (a === '--push') args.push = true;
       else if (a === '--no-push') args.push = false;
       else if (a === '--allow-dirty') args.allowDirty = true;
       else if (a === '--dry-run') args.dryRun = true;
       else if (a === '--preid') args.preid = argv[++i];
+      else if (a === '--auto-push-generated-lockfile') args.autoPushGeneratedLockfile = true;
+      else if (a === '--no-auto-push-generated-lockfile') args.autoPushGeneratedLockfile = false;
       else if (a === '-h' || a === '--help') {
         console.log(`Uso:
-  node bin/versioner.mjs --config version.config.mjs [--since <tag|hash>] [--commit|--no-commit] [--push|--no-push] [--allow-dirty] [--dry-run] [--preid alpha]
+  node bin/versioner.mjs --config version.config.mjs [--since <tag|hash>] [--commit|--no-commit] [--push|--no-push] [--auto-push-generated-lockfile|--no-auto-push-generated-lockfile] [--allow-dirty] [--dry-run] [--preid alpha]
 `);
         process.exit(0);
       }
@@ -55,6 +65,9 @@
       push: args.push,
       allowDirty: args.allowDirty,
       dryRun: args.dryRun,
+      changelog: args.changelog,
+      noChangelog: args.noChangelog,
+      autoPushGeneratedLockfile: args.autoPushGeneratedLockfile,
     });
 
     // output sintetico
@@ -66,6 +79,13 @@
         console.log(`- ${u.unitId}: ${u.from} -> ${u.to} (${u.bump})`);
       }
       console.log(`Git: ${r.git.mode}`);
+      if (r.git?.tags?.length) {
+        for (const tag of r.git.tags) {
+          const state = tag.created ? 'creato' : 'esistente';
+          const pushed = tag.pushed ? ', push' : '';
+          console.log(`Tag: ${tag.name} (${tag.branch}, ${state}${pushed})`);
+        }
+      }
     }
   }
 
