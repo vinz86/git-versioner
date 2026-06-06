@@ -1,7 +1,7 @@
 # git-versioner
 
 <!-- TOOL_VERSION_START -->
-> Versione **0.3.0** del 06/06/2026 17:58
+> Versione **0.3.1** del 06/06/2026 20:18
 <!-- TOOL_VERSION_END -->
 
 CLI di versioning per progetti Git con supporto a:
