@@ -14,14 +14,14 @@ async function git(cwd, args) {
   return await execFileAsync('git', args, { cwd })
 }
 
-test('commitPerBranch apply mode writes files before single-branch commit', async () => {
+test('la modalità apply di commitPerBranch scrive i file prima del commit su singolo branch', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-manager-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
-    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n\nvecchio\n\n')
     await git(dir, ['add', '.'])
     await git(dir, ['commit', '-m', 'chore: initial'])
 
@@ -48,7 +48,7 @@ test('commitPerBranch apply mode writes files before single-branch commit', asyn
           version: { file: 'package.json', field: 'version' },
           write: [
             { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
-            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+            { type: 'readme-marker', file: 'README.md', start: '', end: '', template: 'Versione {{version}}' },
           ],
         }],
         git: {
@@ -68,7 +68,7 @@ test('commitPerBranch apply mode writes files before single-branch commit', asyn
 
     const pkg = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8'))
     assert.equal(pkg.version, '0.0.1')
-    assert.match(await readFile(path.join(dir, 'README.md'), 'utf8'), /Version 0\.0\.1/)
+    assert.match(await readFile(path.join(dir, 'README.md'), 'utf8'), /Versione 0\.0\.1/)
     assert.match(await readFile(path.join(dir, '.release-base'), 'utf8'), /^[0-9a-f]{40}\n$/)
 
     const { stdout: subject } = await git(dir, ['log', '-1', '--pretty=%s'])
@@ -81,14 +81,14 @@ test('commitPerBranch apply mode writes files before single-branch commit', asyn
   }
 })
 
-test('apply mode auto-resolves generated release-base conflicts on a normal target branch', async () => {
+test('la modalità apply risolve automaticamente i conflitti generati su release-base in un normale branch di destinazione', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-releasebase-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
-    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n\nvecchio\n\n')
     await git(dir, ['add', '.'])
     await git(dir, ['commit', '-m', 'chore: initial'])
     const { stdout: initialSha } = await git(dir, ['rev-parse', 'HEAD'])
@@ -124,7 +124,7 @@ test('apply mode auto-resolves generated release-base conflicts on a normal targ
           version: { file: 'package.json', field: 'version' },
           write: [
             { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
-            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+            { type: 'readme-marker', file: 'README.md', start: '', end: '', template: 'Versione {{version}}' },
           ],
         }],
         git: {
@@ -154,17 +154,17 @@ test('apply mode auto-resolves generated release-base conflicts on a normal targ
   }
 })
 
-test('linked submodule current branch propagates to parent current branch with different names', async () => {
+test('il branch corrente del sottomodulo collegato si propaga al branch corrente del genitore con nomi diversi', async () => {
   const parentDir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-parent-'))
   const childDir = path.join(parentDir, 'child')
   try {
     await git(parentDir, ['init'])
     await git(parentDir, ['config', 'user.email', 'test@example.invalid'])
-    await git(parentDir, ['config', 'user.name', 'Test User'])
+    await git(parentDir, ['config', 'user.name', 'Utente Test'])
 
     await git(parentDir, ['init', 'child'])
     await git(childDir, ['config', 'user.email', 'test@example.invalid'])
-    await git(childDir, ['config', 'user.name', 'Test User'])
+    await git(childDir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(childDir, 'package.json'), JSON.stringify({ name: 'child', version: '0.0.0' }, null, 2) + '\n')
     await git(childDir, ['add', '.'])
     await git(childDir, ['commit', '-m', 'chore: child initial'])
@@ -172,7 +172,7 @@ test('linked submodule current branch propagates to parent current branch with d
     const { stdout: childInitialSha } = await git(childDir, ['rev-parse', 'HEAD'])
 
     await writeFile(path.join(parentDir, 'package.json'), JSON.stringify({ name: 'parent', version: '0.0.0' }, null, 2) + '\n')
-    await writeFile(path.join(parentDir, 'README.md'), '# Parent\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await writeFile(path.join(parentDir, 'README.md'), '# Parent\n\n\nvecchio\n\n')
     await git(parentDir, ['add', 'package.json', 'README.md'])
     await git(parentDir, ['update-index', '--add', '--cacheinfo', `160000,${childInitialSha.trim()},child`])
     await git(parentDir, ['commit', '-m', 'chore: parent initial'])
@@ -231,7 +231,7 @@ test('linked submodule current branch propagates to parent current branch with d
             bumpFromMinor: 'patch',
             write: [
               { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
-              { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+              { type: 'readme-marker', file: 'README.md', start: '', end: '', template: 'Versione {{version}}' },
             ],
           }],
           git: {
@@ -261,12 +261,12 @@ test('linked submodule current branch propagates to parent current branch with d
   }
 })
 
-test('apply mode merges source commits into a target that has different commits', async () => {
+test('la modalità apply unisce i commit della sorgente in una destinazione che ha commit diversi', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-merge-target-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
     await git(dir, ['add', '.'])
     await git(dir, ['commit', '-m', 'chore: initial'])
@@ -327,7 +327,7 @@ test('apply mode merges source commits into a target that has different commits'
   }
 })
 
-test('apply push accepts an ahead source and creates a missing local target from remote', async () => {
+test('il push in modalità apply accetta una sorgente in avanti e crea una destinazione locale mancante dal server remoto', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-remote-target-'))
   const remoteDir = path.join(root, 'remote.git')
   const dir = path.join(root, 'work')
@@ -335,7 +335,7 @@ test('apply push accepts an ahead source and creates a missing local target from
     await git(root, ['init', '--bare', remoteDir])
     await git(root, ['init', dir])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await git(dir, ['remote', 'add', 'origin', remoteDir])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
     await git(dir, ['add', '.'])
@@ -394,12 +394,12 @@ test('apply push accepts an ahead source and creates a missing local target from
   }
 })
 
-test('apply mode aborts a failed target merge and restores the source branch', async () => {
+test('la modalità apply interrompe un merge di destinazione fallito e ripristina il branch sorgente', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-merge-conflict-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
     await writeFile(path.join(dir, 'conflict.txt'), 'initial\n')
     await git(dir, ['add', '.'])
@@ -460,14 +460,14 @@ test('apply mode aborts a failed target merge and restores the source branch', a
   }
 })
 
-test('creates configured annotated tag on an explicit target branch head', async () => {
+test('crea un tag annotato configurato sulla testa di un branch di destinazione esplicito', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-tags-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2) + '\n')
-    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n\nvecchio\n\n')
     await git(dir, ['add', '.'])
     await git(dir, ['commit', '-m', 'chore: initial'])
     await git(dir, ['branch', 'release'])
@@ -495,7 +495,7 @@ test('creates configured annotated tag on an explicit target branch head', async
           version: { file: 'package.json', field: 'version' },
           write: [
             { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
-            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+            { type: 'readme-marker', file: 'README.md', start: '', end: '', template: 'Versione {{version}}' },
           ],
         }],
         git: {
@@ -530,14 +530,14 @@ test('creates configured annotated tag on an explicit target branch head', async
   }
 })
 
-test('rejects duplicate tag names across multiple tag targets', async () => {
+test('rifiuta nomi di tag duplicati tra più destinazioni di tag', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-tags-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2) + '\n')
-    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n<!-- APP_VERSION_START -->\nold\n<!-- APP_VERSION_END -->\n')
+    await writeFile(path.join(dir, 'README.md'), '# Demo\n\n\nvecchio\n\n')
     await git(dir, ['add', '.'])
     await git(dir, ['commit', '-m', 'chore: initial'])
     await git(dir, ['branch', 'release'])
@@ -565,7 +565,7 @@ test('rejects duplicate tag names across multiple tag targets', async () => {
           version: { file: 'package.json', field: 'version' },
           write: [
             { type: 'json-set', file: 'package.json', set: { version: '{{version}}' } },
-            { type: 'readme-marker', file: 'README.md', start: '<!-- APP_VERSION_START -->', end: '<!-- APP_VERSION_END -->', template: 'Version {{version}}' },
+            { type: 'readme-marker', file: 'README.md', start: '', end: '', template: 'Versione {{version}}' },
           ],
         }],
         git: {
@@ -587,20 +587,20 @@ test('rejects duplicate tag names across multiple tag targets', async () => {
     })
 
     await assert.rejects(
-      () => manager.run({ commit: true, push: false }),
-      /Nome tag duplicato "demo-v1\.0\.1"/
+        () => manager.run({ commit: true, push: false }),
+        /Nome tag duplicato "demo-v1\.0\.1"/
     )
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('allows one tag name for multiple targets when they point to the same commit', async () => {
+test('consente un unico nome tag per più destinazioni quando puntano allo stesso commit', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-tags-'))
   try {
     await git(dir, ['init'])
     await git(dir, ['config', 'user.email', 'test@example.invalid'])
-    await git(dir, ['config', 'user.name', 'Test User'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
     await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2) + '\n')
     await git(dir, ['add', '.'])
     await git(dir, ['commit', '-m', 'chore: initial'])
@@ -651,6 +651,110 @@ test('allows one tag name for multiple targets when they point to the same commi
     assert.deepEqual(result.results[0].git.tags.map((tag) => tag.name), ['demo-v1.0.1'])
     const { stdout: tags } = await git(dir, ['tag', '--list', 'demo-v1.0.1'])
     assert.equal(tags.trim(), 'demo-v1.0.1')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('il merge a cascata (cascade merge) si propaga attraverso i branch intermedi invece di unire direttamente la sorgente', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'git-versioner-cascade-'))
+  try {
+    await git(dir, ['init'])
+    await git(dir, ['config', 'user.email', 'test@example.invalid'])
+    await git(dir, ['config', 'user.name', 'Utente Test'])
+    await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'demo', version: '0.0.0' }, null, 2) + '\n')
+    await git(dir, ['add', '.'])
+    await git(dir, ['commit', '-m', 'chore: initial'])
+
+    // Crea staging e main dalla stessa base
+    await git(dir, ['branch', 'staging'])
+    await git(dir, ['branch', 'main'])
+
+    // Branch feature: aggiunge un commit di tipo feature
+    await git(dir, ['checkout', '-b', 'feature'])
+    await writeFile(path.join(dir, 'feature.txt'), 'feature\n')
+    await git(dir, ['add', 'feature.txt'])
+    await git(dir, ['commit', '-m', 'feat: feature change'])
+
+    // Branch staging: aggiunge un commit solo su staging (diverge da feature)
+    await git(dir, ['checkout', 'staging'])
+    await writeFile(path.join(dir, 'staging.txt'), 'staging\n')
+    await git(dir, ['add', 'staging.txt'])
+    await git(dir, ['commit', '-m', 'fix: staging-only change'])
+
+    // Branch main: aggiunge un commit solo su main (diverge sia da feature che da staging)
+    await git(dir, ['checkout', 'main'])
+    await writeFile(path.join(dir, 'main.txt'), 'main\n')
+    await git(dir, ['add', 'main.txt'])
+    await git(dir, ['commit', '-m', 'fix: main-only change'])
+
+    // Torna a feature (branch sorgente)
+    await git(dir, ['checkout', 'feature'])
+
+    const manager = new VersionManager({
+      baseline: { strategy: 'none' },
+      rules: {
+        bracket: { enabled: true, map: {} },
+        conventional: { enabled: true, map: { fix: 'patch', feat: 'minor', chore: 'patch' } },
+        breaking: { enabled: true },
+        allowUnprefixed: false,
+      },
+      repos: [{
+        id: 'demo',
+        root: dir,
+        units: [{
+          id: 'app',
+          name: 'demo',
+          type: 'app',
+          pathFilter: [],
+          version: { file: 'package.json', field: 'version' },
+          write: [{ type: 'json-set', file: 'package.json', set: { version: '{{version}}' } }],
+        }],
+        git: {
+          requireClean: true,
+          commit: true,
+          push: false,
+          messageFromUnit: 'app',
+          commitPerBranch: true,
+          commitPerBranchMode: 'apply',
+          includeCurrentBranch: true,
+          mergeCurrentBranchIntoTargets: true,
+          mergeCascade: true,
+          branches: [
+            { name: 'staging', message: 'Versione {{version}} - staging' },
+            { name: 'main', message: 'Versione {{version}} - main' },
+          ],
+        },
+      }],
+    })
+
+    await manager.run({ commit: true, push: false })
+
+    // Verifica che tutti i branch abbiano il file di versione aggiornato
+    for (const branch of ['feature', 'staging', 'main']) {
+      const { stdout: pkg } = await git(dir, ['show', `${branch}:package.json`])
+      const parsed = JSON.parse(pkg)
+      assert.equal(parsed.version, '0.1.0', `${branch} dovrebbe avere la versione 0.1.0`)
+    }
+
+    // Verifica che main contenga staging.txt (unito tramite staging, non direttamente da feature)
+    const { stdout: mainFiles } = await git(dir, ['ls-tree', '--name-only', 'main'])
+    assert.match(mainFiles, /staging\.txt/, 'main dovrebbe contenere staging.txt tramite la cascata')
+    assert.match(mainFiles, /feature\.txt/, 'main dovrebbe contenere feature.txt tramite la cascata passando da staging')
+    assert.match(mainFiles, /main\.txt/, 'main dovrebbe mantenere i propri file')
+
+    // Verifica che il commit di testa di main sia un commit di merge (2 genitori) proveniente da staging
+    const { stdout: mergeParents } = await git(dir, ['log', 'main', '-1', '--format=%P'])
+    const parents = mergeParents.trim().split(' ')
+    assert.equal(parents.length, 2, 'la testa di main dovrebbe essere un commit di merge con 2 genitori')
+
+    // Il secondo genitore dovrebbe essere il commit della versione di staging, non di feature
+    const { stdout: secondParentBranch } = await git(dir, ['name-rev', '--name-only', parents[1]])
+    assert.match(secondParentBranch, /staging/, 'il secondo genitore del merge dovrebbe provenire dal branch staging')
+
+    // Verifica se mi trovo sul branch originale
+    const { stdout: restoredBranch } = await git(dir, ['branch', '--show-current'])
+    assert.equal(restoredBranch.trim(), 'feature')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
