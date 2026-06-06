@@ -877,6 +877,7 @@ export class VersionManager {
       }
 
       const branchHeads = {};
+      const mergeCascade = Boolean(gitCfg.mergeCascade);
 
       try {
         const targets = [...branches];
@@ -888,6 +889,8 @@ export class VersionManager {
             message: gitCfg.currentBranchMessage || gitCfg.message || 'Versione {{version}} del {{stamp}} - {{branch}}',
           });
         }
+
+        let previousBranch = originalBranch;
 
         for (const b of targets) {
           const remote = b.remote || (await getDefaultRemote(repoRoot));
@@ -930,8 +933,9 @@ export class VersionManager {
           );
 
           if (shouldMergeSourceBranch) {
+            const mergeSource = mergeCascade ? previousBranch : originalBranch;
             try {
-              await merge(repoRoot, originalBranch, { noEdit: true, noFF: true, noCommit: true });
+              await merge(repoRoot, mergeSource, { noEdit: true, noFF: true, noCommit: true });
             } catch (e) {
               const resolved = await resolveGeneratedMergeConflicts(repoRoot, {
                 releaseBaseFile,
@@ -940,7 +944,7 @@ export class VersionManager {
               });
               if (!resolved) {
                 await mergeAbort(repoRoot);
-                throw new Error(`Merge fallito di ${originalBranch} su ${b.name}: ${e?.message ?? e}`);
+                throw new Error(`Merge fallito di ${mergeSource} su ${b.name}: ${e?.message ?? e}`);
               }
             }
           }
@@ -965,6 +969,7 @@ export class VersionManager {
           await gitCommit(repoRoot, msg);
           const branchHead = (await git(['rev-parse', 'HEAD'], { cwd: repoRoot })).trim();
           branchHeads[b.name] = branchHead;
+          previousBranch = b.name;
 
         }
 
