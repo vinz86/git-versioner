@@ -152,7 +152,6 @@ export default {
         commitPerBranch: true,
         commitPerBranchMode: 'apply',
         mergeCurrentBranchIntoTargets: true,
-        mergeCurrentBranchIntoVersionsBranch: false,
 
         messageFromUnit: 'app',
         includeCurrentBranch: true,
@@ -163,12 +162,9 @@ export default {
           { name: 'current_version', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - current_version' },
         ],
 
-        versionsBranch: 'versions',
-        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - versions',
-
         tag: {
           enabled: true,
-          targets: 'versions',
+          targets: 'current_version',
           name: 'bibrid-v{{version}}',
           message: 'Versione {{version}} del {{stamp}} - bibrid',
           annotated: true,
@@ -234,7 +230,6 @@ export default {
         commitPerBranch: true,
         commitPerBranchMode: 'apply',
         mergeCurrentBranchIntoTargets: true,
-        mergeCurrentBranchIntoVersionsBranch: false,
 
         messageFromUnit: 'layer-ui-kit',
         includeCurrentBranch: true,
@@ -246,12 +241,9 @@ export default {
           { name: 'current_version', remote: 'origin', message: 'Versione {{version}} del {{stamp}} - ui-kit:current_version' },
         ],
 
-        versionsBranch: 'versions',
-        versionsBranchMessage: 'Versione {{version}} del {{stamp}} - ui-kit:versions',
-
         tag: {
           enabled: true,
-          targets: 'versions',
+          targets: 'current_version',
           name: 'ui-kit-v{{version}}',
           message: 'Versione {{version}} del {{stamp}} - ui-kit',
           annotated: true,
