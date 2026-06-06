@@ -302,17 +302,31 @@ async function applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, 
   if (!dryRun) await fs.writeFile(abs, `${releaseBaseHash}\n`, 'utf8');
 }
 
-async function resolveGeneratedMergeConflicts(repoRoot, { releaseBaseFile, releaseBaseHash, dryRun }) {
+async function resolveGeneratedMergeConflicts(repoRoot, {
+  releaseBaseFile,
+  releaseBaseHash,
+  generatedFiles = [],
+  dryRun,
+}) {
   const unmerged = await getUnmergedPaths(repoRoot);
   if (!unmerged.length) return false;
 
-  const generated = new Set([releaseBaseFile].filter(Boolean));
+  const generated = new Set([releaseBaseFile, ...(generatedFiles || [])].filter(Boolean));
   const unsupported = unmerged.filter((file) => !generated.has(file));
   if (unsupported.length) return false;
 
   if (releaseBaseFile && unmerged.includes(releaseBaseFile)) {
     await applyReleaseBaseFile(repoRoot, releaseBaseFile, releaseBaseHash, dryRun);
     await addPath(repoRoot, releaseBaseFile);
+  }
+
+  for (const file of unmerged) {
+    if (file === releaseBaseFile) continue;
+    if (!generated.has(file)) continue;
+    if (!dryRun) {
+      await git(['checkout', '--ours', '--', file], { cwd: repoRoot });
+      await addPath(repoRoot, file);
+    }
   }
 
   return true;
@@ -478,7 +492,23 @@ export class VersionManager {
         const varsForInit = { repo: repoCfg.id || '', unit: unit.id, name: unit.name || unit.id, stamp: formatNowIt() };
         return await readUnitCurrentVersion(targetRepoRoot, unit, varsForInit, false, false);
       },
-    });
+      });
+  }
+
+  #getGeneratedChangelogPaths(repoCfg, version) {
+    const changelogCfg = repoCfg?.changelog
+    if (!changelogCfg?.enabled) return []
+
+    const generated = []
+    if (changelogCfg?.global?.enabled && changelogCfg?.global?.output) {
+      generated.push(changelogCfg.global.output)
+    }
+
+    if (changelogCfg?.versioned?.enabled && changelogCfg?.versioned?.output) {
+      generated.push(String(changelogCfg.versioned.output).replace(/\{\{\s*version\s*\}\}/g, version))
+    }
+
+    return generated
   }
 
   async run({
@@ -710,6 +740,7 @@ export class VersionManager {
                       applyPerBranchMode,
                       releaseBaseHash,
                       releaseBaseFile,
+                      version,
                       pendingSubmoduleUpdates = {},
                       changelog = false,
                       noChangelog = false,
@@ -940,6 +971,7 @@ export class VersionManager {
               const resolved = await resolveGeneratedMergeConflicts(repoRoot, {
                 releaseBaseFile,
                 releaseBaseHash,
+                generatedFiles: this.#getGeneratedChangelogPaths(repoCfg, version),
                 dryRun,
               });
               if (!resolved) {
